@@ -1,5 +1,13 @@
 # WHILL Nav2 导航源码交接
 
+## 2026-11-09 当前交接入口
+
+- [工作空间索引](handoff/20261109/WORKSPACE_INDEX_20261109.md)
+- [Nav2 交接](handoff/20261109/NAV2_HANDOFF_20261109.md)
+- [眼动与导航接口交接](handoff/20261109/EYE_NAV_HANDOFF_20261109.md)
+
+上述文档按 2026-11-09 Jetson 实查撰写。以下源码归档仍是 2026-11-03 的 Nav2 快照，**不等于 Jetson 所有后续源码**；本次未同步后续眼控/RDS 源码，真实接口状态和待完成测试以新交接为准。旧文档中的运行状态、命令及参数可能过期。
+
 2026-11-03，Jetson AGX Orin / Ubuntu 22.04 / ROS 2 Humble / Cyclone DDS。当前保留的导航配置为 **turn_memory：Smac Lattice + RotationShim + MPPI + ObstacleLayer记忆**。
 
 此目录是现机源码、参数和标定清单快照；原生Nav2控制链没有接入新眼控RDS速度求解器。具体边界与共享层变更见 [审核记录](docs/NAV2_ISOLATION_AUDIT_20261103.md)。源码归档不代表本次已重新启动或验证真实轮椅。
