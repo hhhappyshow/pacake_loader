@@ -13,8 +13,8 @@ if [[ ${1:-} == camera-session ]]; then
   exec python3 "$root/camera_session.py" "$@"
 fi
 if [[ ${1:-} == capture ]]; then
-  shift
-  exec python3 "$root/ros_observation_bridge.py" "$@"
+  printf '%s\n' 'capture (ros_observation_bridge) was removed; use observe instead.' >&2
+  exit 2
 fi
 if [[ ${1:-} == observe ]]; then
   shift
@@ -25,7 +25,7 @@ if [[ ${1:-} == run-native-cycle ]]; then
   exec python3 "$root/native_cycle_bridge.py" "$@"
 fi
 if [[ ${1:-} == run-cycle ]]; then
-  shift
-  exec python3 "$root/ros_cycle_bridge.py" "$@"
+  printf '%s\n' 'run-cycle (ServoJ bridge) was removed; use run-native-cycle instead.' >&2
+  exit 2
 fi
 exec python3 "$root/jetson_interfaces.py" "$@"

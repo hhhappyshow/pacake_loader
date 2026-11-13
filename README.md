@@ -169,6 +169,5 @@ DO统一：吸附先DO1=0再DO0=1（10）；释放先DO0=0再DO1=1（01），0.2
 - `straight_place/`：候选、独立worker、持箱/空载规划与可视化。
 - `experiments/s20_greedy_async_20261023/`：继承的项目几何/仿真依赖。
 - [records/S20/README.md](records/S20/README.md)：详细模块导航。
-- [研究日记](records/S20/RESEARCH_DIARY.md)：成功、失败、改动、证据范围与下一决定。
 
 部分证据链接仅在原现场工作区有效。源码库不含全部图像/视频/原始日志、密码密钥、环境、第三方整树、权重、SDK二进制、其他机器人和旧32/41箱项目。

@@ -9,12 +9,12 @@ case "${1:-}" in
     shift
     exec python3 "$here/planning_candidates.py" "$@"
     ;;
-  contract|snapshot|inverse-kinematics|camera-status|camera-profiles|camera-session|capture|observe|prepare-reference|run-cycle|run-native-cycle)
+  contract|snapshot|inverse-kinematics|camera-status|camera-profiles|camera-session|observe|prepare-reference|run-native-cycle)
     exec "$here/s20-interfaces" "$@"
     ;;
   *)
-    printf '%s\n' 'Usage: s20-device {candidates|contract|snapshot|camera-status|camera-profiles|capture|prepare-reference} [arguments]' >&2
-    printf '%s\n' 'run-cycle is read-only unless --execute is explicitly supplied; execution sends motion and vacuum IO.' >&2
+    printf '%s\n' 'Usage: s20-device {candidates|contract|snapshot|camera-status|camera-profiles|prepare-reference} [arguments]' >&2
+    printf '%s\n' 'run-native-cycle is read-only unless --execute is explicitly supplied; execution sends motion and vacuum IO.' >&2
     exit 2
     ;;
 esac

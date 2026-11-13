@@ -34,8 +34,7 @@
 | 持箱/空载求路、独立规划实例 | `deployment/prepare_observed_place.py`、`straight_place/async_sparse_place.py`、`optimized_cycle_place.py` |
 | 事件与参考组合 | `deployment/compose_cycle.py` |
 | 官方SDK执行及真空/人工确认 | `deployment/native_cycle_bridge.py`；`s20-device`和`s20-interfaces`为远端入口 |
-| 历史ServoJ接口，不是当前默认执行 | `deployment/ros_cycle_bridge.py`、`servoj_reference.py`、`run_servoj_executor.py`、`start_servoj_executor.py` |
-| 诊断与离线实验，不是主流程入口 | `compare_saved_detectors.py`、`movepath_single.py`、`native_down_compare.py`、`vacuum_stationary.py`；不因整理而执行 |
+| 诊断与离线实验，不是主流程入口 | 历史ServoJ执行器与诊断脚本已在2026-11-13整理中删除； ServoJ参考准备保留在`deployment/servoj_reference.py` |
 
 当前行为：YOLO11m-seg→上表面/中心吸取→抬升/示教入舱→异步候选与IK/CAD→先伸入、再横移、最后下放→释放确认→竖直上抬20cm→空载返回。水平每侧5cm代理余量，实际底面支撑另算；5cm高度归并尚未启用。当前是贪心/数值规划，不是RL、严格GSIP/KC复现，也不把现用LM路径称cuRobo V2后端。
 
@@ -49,7 +48,7 @@
 - 四周余量/释放后直升：[release_lift_padding_20261026](../../experiments/s20_online_mixed8_20261024/release_lift_padding_20261026/)。保留第一次trace失败及修正。
 - 横放排序：[horizontal_order_fix_20261026](../../experiments/s20_online_mixed8_20261024/horizontal_order_fix_20261026/)。
 - 检测模型比较与顶面平行假设修正分别在`detector_comparison_20261026/`、`round2_plane_fix_20261026/`。
-- 全部历史结论、失败和限制继续写入[RESEARCH_DIARY.md](RESEARCH_DIARY.md)，不另开同类MD；历史报告里的“当前”以对应日期理解，不覆盖本节。
+- 部分证据链接仅在原现场工作区有效。源码库不含全部图像/视频/原始日志、密码密钥、环境、第三方整树、权重、SDK二进制、其他机器人和旧32/41箱项目。历史研究日记已于2026-11-13整理中移除。
 
 ## 其他研究与原始记录
 

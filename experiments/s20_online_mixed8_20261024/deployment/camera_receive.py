@@ -14,6 +14,21 @@ import subprocess
 import time
 
 
+def image_array(msg,depth=False):
+    """ROS Image message to numpy; local copy of the removed ros_observation_bridge helper."""
+    import numpy as np
+    if depth:
+        kind={'16UC1':'u2','32FC1':'f4'}.get(msg.encoding)
+        if kind is None:raise ValueError('Unsupported depth encoding: '+msg.encoding)
+        dtype=np.dtype(('>' if msg.is_bigendian else '<')+kind)
+        return np.ndarray((msg.height,msg.width),dtype=dtype,buffer=msg.data,
+                          strides=(msg.step,dtype.itemsize)).astype(float)
+    if msg.encoding not in ('rgb8','bgr8'):raise ValueError('Unsupported color encoding: '+msg.encoding)
+    image=np.ndarray((msg.height,msg.width,3),dtype=np.uint8,buffer=msg.data,
+                     strides=(msg.step,3,1)).copy()
+    return image[:,:,::-1].copy() if msg.encoding=='rgb8' else image
+
+
 def driver_configuration():
     params={'camera_name':'d555_check','enable_color':True,'enable_color1':False,'enable_depth':True,
         'enable_infra':False,'enable_infra1':False,'enable_infra2':False,'enable_gyro':False,
@@ -44,7 +59,7 @@ def main(argv=None):
     from rclpy.qos import QoSProfile,DurabilityPolicy,ReliabilityPolicy
     from sensor_msgs.msg import Image,CameraInfo
     from tf2_msgs.msg import TFMessage
-    from ros_observation_bridge import image_array
+    from camera_receive import image_array
     rclpy.init();node=rclpy.create_node('s20_camera_receive')
     root='/s20_deploy_readonly/d555_check'
     counts={'rgb':0,'depth':0,'info':0};first={};latest={};driver_transforms={}
