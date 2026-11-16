@@ -1,0 +1,93 @@
+{
+  "radius_m": 2.6714504752195336,
+  "center_link": "elfin_base",
+  "target": "suction_contact_frame origin",
+  "method": "Triangle-inequality outer sphere from complete URDF base-to-TCP joint-origin translations",
+  "interpretation": "Conservative outer bound only; does not certify downward orientation, collision or IK",
+  "chain": [
+    {
+      "joint": "suction_contact_frame_joint",
+      "translation_m": [
+        0.0,
+        -0.286,
+        0.0
+      ],
+      "length_m": 0.286
+    },
+    {
+      "joint": "suction_panel_joint",
+      "translation_m": [
+        0.0006,
+        0.0,
+        0.0
+      ],
+      "length_m": 0.0006
+    },
+    {
+      "joint": "elfin_end_joint",
+      "translation_m": [
+        0.0,
+        0.0,
+        0.1257
+      ],
+      "length_m": 0.1257
+    },
+    {
+      "joint": "elfin_joint6",
+      "translation_m": [
+        0.0,
+        0.0,
+        0.138
+      ],
+      "length_m": 0.138
+    },
+    {
+      "joint": "elfin_joint5",
+      "translation_m": [
+        0.0,
+        0.0,
+        0.138
+      ],
+      "length_m": 0.138
+    },
+    {
+      "joint": "elfin_joint4",
+      "translation_m": [
+        0.712,
+        0.0,
+        0.0
+      ],
+      "length_m": 0.712
+    },
+    {
+      "joint": "elfin_joint3",
+      "translation_m": [
+        -0.85,
+        0.0,
+        -0.1885
+      ],
+      "length_m": 0.8706504752195338
+    },
+    {
+      "joint": "elfin_joint2",
+      "translation_m": [
+        0.0,
+        -0.2295,
+        0.0
+      ],
+      "length_m": 0.2295
+    },
+    {
+      "joint": "elfin_joint1",
+      "translation_m": [
+        0.0,
+        0.0,
+        0.171
+      ],
+      "length_m": 0.171
+    }
+  ],
+  "maximum_placed_box_top_above_floor_m": 1.0,
+  "scene": "/home/ubuntu/Documents/ChatGPT/CPS Intern/reproductions/ludan_greedy_20261023/deployment_ws/config/scene_tf.loading_site.yaml",
+  "dynamics": "Disabled for this kinematic planning experiment"
+}

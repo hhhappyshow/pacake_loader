@@ -26,6 +26,13 @@ def revalidate_plan(r, plan, scene_version):
         samples=len(qs),attachment_source='actual post-contact attachment; background prediction not trusted as actual',
         intended_release_contact='Original suction/source contact only during separation; strict CAD afterward')
     previous=None
+    flip=getattr(r,'planner_options',{}).get('flip_horizontal',False)
+    if flip:
+        from straight_place.flip_geometry import sample_metrics, constraint_error
+        tf=next(v for v in r.cfg['static_transforms'] if v['child']=='container_link')
+        container_rotation=R.from_euler('xyz',tf['rotation_rpy'])
+        dimensions=plan['placement']['planning_dimensions_m']
+        detail['flip_constraints_checked_on_actual_attachment']=True
     try:
         for index,(q,stage) in enumerate(zip(qs,stages)):
             if previous and previous.endswith('_EMPTY_SEPARATE') and stage!=previous:
@@ -47,6 +54,14 @@ def revalidate_plan(r, plan, scene_version):
             if not r.validate(q):
                 detail.update(reason='actual_attachment_CAD_rejected',stage=stage,sample=index,pairs=r.collision.last_hits)
                 return None,detail
+            if flip:
+                tcp_pose=r.w.fk.body_q.numpy()[r.tcp]
+                metrics=sample_metrics(tcp_pose,stage,offset,rotation,dimensions,container_rotation,
+                                       np.asarray(tf['translation']),r.hull.door_x,width_vertical=r.planner_options.get('width_vertical',False))
+                reason=constraint_error(metrics)
+                if reason:
+                    detail.update(reason=reason,stage=stage,sample=index,metrics=metrics)
+                    return None,detail
             previous=stage
         detail.update(accepted=True,reason='all_actual_state_samples_passed')
         return (qs,stages),detail

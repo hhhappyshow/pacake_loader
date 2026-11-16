@@ -53,9 +53,9 @@ def placement_worker(request_path,output,regions,compact_prior=False):
 
 class Runtime:
     def __init__(self,out,realtime,catalog=None):
-        self.out=out;self.realtime=realtime;wp.set_device("cuda:0")
+        self.out=out;self.realtime=realtime;wp.set_device("cuda:0" if wp.is_cuda_available() else "cpu")
         self.cfg=yaml.safe_load(SCENE.read_text());self.hull=p.Hull.from_config(self.cfg)
-        self.ik=TopWorkspace(UPSTREAM/"policy/vendor/roboticarm",SCENE,device="cuda:0");self.ik.position_tolerance_m=.01
+        self.ik=TopWorkspace(UPSTREAM/"policy/vendor/roboticarm",SCENE,device=("cuda:0" if wp.is_cuda_available() else "cpu"));self.ik.position_tolerance_m=.01
         catalog=catalog or [[.55,.4,.25]]*3
         sample=dict(container=self.hull.as_dict(),steps=[dict(incoming=dict(id=f"B{i+1}",dims=d)) for i,d in enumerate(catalog)])
         self.model,ids,_,_=make_model(sample,UPSTREAM/"policy/vendor/roboticarm",SCENE);self.state=self.model.state()

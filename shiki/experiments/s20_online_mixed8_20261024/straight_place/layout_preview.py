@@ -70,7 +70,7 @@ def render(result,out):
     cfg=yaml.safe_load(SCENE.read_text());h=p.Hull.from_config(cfg)
     accepted=[v for v in result['arrivals'] if v['accepted']]
     sample=dict(container=h.as_dict(),steps=[dict(incoming=dict(id=a['box']['id'],dims=a['box']['dims'])) for a in accepted])
-    wp.set_device('cuda:0')
+    wp.set_device('cuda:0' if wp.is_cuda_available() else 'cpu')
     model,ids,_,_=make_model(sample,UPSTREAM/'policy/vendor/roboticarm',SCENE,show_robot=False)
     state=model.state();poses=model.body_q.numpy().copy()
     tf=next(t for t in cfg['static_transforms'] if t['child']=='container_link')

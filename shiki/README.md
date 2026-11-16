@@ -42,6 +42,10 @@ YOLO11m-seg权重需按上游许可取得并放入`experiments/s20_online_mixed8
 
 ## 仿真与离线规划
 
+### 浏览器实时三维显示
+
+在本仓库目录执行 `./s20-view`，然后打开 `http://127.0.0.1:8765`，默认点击“开始四箱翻转仿真”，观看在三层预置箱子上方，以宽边竖直、长边水平的姿态连续插入四个新箱。抓取前比较完整抓取搬运与放置路径；也可切换空舱翻转和原有四箱流程。使用理想吸附和冻结释放。支持鼠标旋转/缩放、舱壁半透明、TCP 轨迹、关节角和阶段显示。冻结画面不暂停仿真。详见 [实时查看器说明](experiments/s20_online_mixed8_20261024/browser_viewer/README.md)。
+
 ### A. 当前部署同款规划，无硬件动作
 
 使用现场已保存的观测目录，需包含`observation/observation.json`、`grasp.json`、`controller_snapshot.json`和解析模型；原始观测不随源码上传。

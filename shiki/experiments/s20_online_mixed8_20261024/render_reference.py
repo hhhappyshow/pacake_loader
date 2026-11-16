@@ -61,7 +61,7 @@ def main():
         indices,wall_duration=wall_clock_indices(data['wall_times_s'],args.fps,len(data['body_q']))
     else:
         indices=np.unique(np.r_[np.arange(0,len(data["body_q"]),args.stride),len(data["body_q"])-1])
-    wp.set_device("cuda:0")
+    wp.set_device("cuda:0" if wp.is_cuda_available() else "cpu")
     if args.suitcase_assets:
         sys.path.insert(0,str(Path(__file__).resolve().parent/'perception'))
         from suitcase_capture import make_runtime

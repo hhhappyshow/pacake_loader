@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$root/experiments/s20_online_mixed8_20261024/browser_viewer/server.py" "$@"

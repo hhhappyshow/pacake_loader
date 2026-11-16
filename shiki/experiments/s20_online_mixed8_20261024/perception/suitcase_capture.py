@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[3]
 ASSET = ROOT/'reproductions/ludan_greedy_20261023/src/luggage_gazebo/models/suitcase_vintage/meshes/suitcase.obj'
 
 
-def make_runtime(output, catalog, site_urdf=None):
+def make_runtime(output, catalog, site_urdf=None, static_boxes=None):
     """catalog is scene-generation sizes only, [length,width,height] metres.
 
     Builds original invisible collision boxes and textured visible meshes on
@@ -53,6 +53,9 @@ def make_runtime(output, catalog, site_urdf=None):
         builder.default_joint_cfg.target_kd = 120.
         config = add_cell_scene(builder,source_root,show_robot=show_robot,
             scene_config_path=scene_config_path,container_y_override=container_y_override)
+        if static_boxes:
+            from straight_place.stacked_scene import add_static_boxes
+            add_static_boxes(builder, config, static_boxes)
         ids = {}
         for step in sample['steps']:
             item = step['incoming']; label = item['id']; dims = np.array(item['dims'])
@@ -96,6 +99,7 @@ def make_runtime(output, catalog, site_urdf=None):
     finally:
         observed_cycle.make_model = original
         native.make_robot_urdf=original_robot
+    runtime.static_boxes = list(static_boxes or [])
     runtime.site_urdf=str(Path(site_urdf).resolve()) if site_urdf else None
     runtime.sensor = SensorTiledCamera(runtime.model,config=RenderConfig(enable_textures=True,enable_shadows=False))
     runtime.sensor.utils.create_default_light(enable_shadows=False)

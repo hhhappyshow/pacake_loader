@@ -65,6 +65,24 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
     shared_events = report.setdefault('events',[])
     plans = []
     options = getattr(r, 'planner_options', {})
+    flip = options.get('flip_horizontal', False)
+    fixture = [Box(v['id'],tuple(v['dims']),tuple(v['pos'])) for v in options.get('static_boxes',[])]
+    occupied = list(occupied) + fixture
+    width_vertical = options.get('width_vertical',False)
+    if flip:
+        from straight_place.flip_geometry import horizontal_tool, rotated_extent, sample_metrics, constraint_error
+        flip_tool = horizontal_tool(cr, estimated_rotation, width_vertical=width_vertical)
+        flip_dims = np.maximum(rotated_extent(dimensions, flip_tool*estimated_rotation, cr),
+            rotated_extent(dimensions,R.from_rotvec(flip_tool.apply([0,0,1])*np.pi)*flip_tool*estimated_rotation,cr))
+        item['horizontal_flip'] = dict(tcp_axis='+Z', target_normal_world=flip_tool.apply([0,0,1]).tolist(),
+            rotated_extent_m=flip_dims.tolist(), release_model='Conservative OBB floor clearance, ideal frozen release')
+
+    def tool_for_candidate(box, heading):
+        if flip:
+            return R.from_rotvec(flip_tool.apply([0,0,1])*heading)*flip_tool
+        yaw = -np.pi/2 if tuple(box.dims)==(dimensions[1],dimensions[0],dimensions[2]) else 0.
+        return cr*R.from_euler('z',yaw+heading)*estimated_rotation.inv()
+
     counters = dict(ik_calls=0, endpoint_ik_calls=0, endpoint_unresolved=0,
         segment_cache_hits=0, segment_cache_misses=0, cad_calls=0,
         endpoint_filter_s=0., ik_s=0., cad_s=0., interpolation_s=0.)
@@ -159,7 +177,28 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
                     contact_details=contact_details(),q_rad=q.tolist())
                 segment_cache[key]=(None,error)
                 return None,error
+        constraint_samples=[]
+        if flip:
+            for index,q in enumerate(path):
+                tcp_actual=pose_for_q(q)[r.tcp]
+                metrics=sample_metrics(tcp_actual,name,actual_offset,actual_rotation,dimensions,cr,translation,h.door_x,width_vertical=width_vertical)
+                reason=constraint_error(metrics)
+                if '_HORIZONTAL_' in name:
+                    delta=position-tcp[:3]
+                    alpha=np.clip(np.dot(tcp_actual[:3]-tcp[:3],delta)/max(np.dot(delta,delta),1e-12),0.,1.)
+                    metrics['line_error_m']=float(np.linalg.norm(tcp_actual[:3]-(tcp[:3]+alpha*delta)))
+                    if metrics['line_error_m'] > .005:reason='Cartesian_line_deviation_exceeds_5mm'
+                if reason:
+                    error=dict(stage=name,reason=reason,sample=index,metrics=metrics)
+                    segment_cache[key]=(None,error)
+                    return None,error
+                if metrics:constraint_samples.append(metrics)
         event = dict(stage=name,planning_wall_s=time.perf_counter()-start,reference_s=len(path)*.02,frames=len(path),ik_knots=knots,cache_hit=False)
+        if constraint_samples:
+            event['flip_constraints']=dict(
+                max_horizontal_error_deg=max(v.get('horizontal_error_deg',0.) for v in constraint_samples),
+                max_line_error_m=max(v.get('line_error_m',0.) for v in constraint_samples),
+                min_outside_clearance_m=min((v['outside_clearance_m'] for v in constraint_samples if 'outside_clearance_m' in v),default=None))
         segment_cache[key]=((path,event),None)
         return (name,path,event),None
 
@@ -180,16 +219,18 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
         if cad(q0):
             raise RuntimeError(f'{label}: held-entry state already CAD-rejected: {r.collision.last_hits}')
         entry_tcp = initial_poses[r.tcp].copy()
-        lower,error = segment(q0,entry_tcp[:3]+[0,0,-.05],entry_tcp[3:],label+'_ENTRY_LOWER_5CM')
-        if error:
-            item['failures'].append(error);base_q=q0.copy();entry_prefix=[]
-        else:
-            entry_prefix=[lower];base_q=lower[1][-1]
+        base_q=q0.copy();entry_prefix=[]
+        if not flip:
+            lower,error = segment(q0,entry_tcp[:3]+[0,0,-.05],entry_tcp[3:],label+'_ENTRY_LOWER_5CM')
+            if error:
+                item['failures'].append(error)
+            else:
+                entry_prefix=[lower];base_q=lower[1][-1]
         prior_class = SparseCompactPrior
         if options.get('layout_prior') == 'contact':
             from straight_place.contact_layout import ContactLayoutPrior
             prior_class = ContactLayoutPrior
-        prior=prior_class(r.cfg,h,max_box_top_m=options.get('max_box_top_m',1.),ordering=options.get('candidate_order','greedy'),max_candidates=options.get('max_candidates',10),
+        prior=prior_class(r.cfg,h,max_box_top_m=options.get('max_box_top_m',h.height if fixture else 1.),ordering=options.get('candidate_order','greedy'),max_candidates=options.get('max_candidates',10),
                           neighbor_gap_m=options.get('neighbor_gap_m',0.),
                           min_support_coverage=options.get('min_support_coverage',.8),
                           **({'layer_preference_band_m':options.get('layer_preference_band_m',0.)} if options.get('layout_prior')=='contact' else {}),
@@ -208,7 +249,19 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
                 trace['source'] = 'Actual attached-arm planning query, including original sphere and clearance'
                 item['candidate_trace'] = trace
             prior.trace_sink = record_candidates
-        candidates,stats=prior.candidates(dimensions,list(occupied))
+        if flip:
+            prior.use_endpoint_sphere = False  # Top-grasp sphere does not model a side TCP.
+            candidates = []
+            support_z=max((v.pos[2]+v.dims[2] for v in fixture),default=0.)
+            for lateral in ((.08, .68, .20, .40, .60) if fixture else (.08, .20, .40, .60)):
+                for depth in ((.92, .63, .34, .05, .65, .35, .50, .20) if fixture else (.20, .35, .50, .65)):
+                    b = Box('current',tuple(flip_dims),(depth,lateral,support_z))
+                    if prior.valid(b,occupied) and h.door_fits(lateral,max(support_z+.03,h.door_z0+.03),b.dims[1],b.dims[2]):
+                        candidates.append(b)
+            stats = dict(selected=len(candidates),variant='sequential_horizontal_flip',future_arrivals_used=0,
+                         candidates=[asdict(b) for b in candidates], layout_search='Fixed supported anchors above declared stack; not general multi-box packing')
+        else:
+            candidates,stats=prior.candidates(dimensions,list(occupied))
         item['candidate_stats']=stats
         observation=np.array(taught_pose('observation'))
         taught_lift=np.array(taught_pose('post_pick_lift'))
@@ -220,7 +273,7 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
             for rank,b in enumerate(candidates):
                 yaw=-np.pi/2 if tuple(b.dims)==(dimensions[1],dimensions[0],dimensions[2]) else 0.
                 for heading in (0.,np.pi):
-                    tool_rotation=cr*R.from_euler('z',yaw+heading)*estimated_rotation.inv()
+                    tool_rotation=tool_for_candidate(b,heading)
                     endpoint=np.asarray(b.pos)+np.asarray(b.dims)/2+origin+[0.,0.,.005]
                     position=translation+cr.apply(endpoint)-tool_rotation.apply(estimated_offset)
                     for seed in (base_q,q0):
@@ -245,13 +298,19 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
                 route=p.route_to(b,list(occupied),h,min_entry_z=height)
                 if route is not None and route not in routes:routes.append(route)
             initial_rotation=R.from_quat(entry_tcp[3:])
-            headings=sorted((0.,np.pi),key=lambda a:(initial_rotation.inv()*cr*R.from_euler('z',yaw+a)*estimated_rotation.inv()).magnitude())
+            headings=sorted((0.,np.pi),key=lambda a:(initial_rotation.inv()*tool_for_candidate(b,a)).magnitude())
             for heading in headings:
-                tool_rotation=cr*R.from_euler('z',yaw+heading)*estimated_rotation.inv()
+                tool_rotation=tool_for_candidate(b,heading)
                 def target(point):
                     center=translation+cr.apply(np.array(point)+np.array(b.dims)/2+origin)
                     return center-tool_rotation.apply(estimated_offset),tool_rotation.as_quat()
-                if options.get('insert_then_shift', False):
+                if flip:
+                    transit_z=max(b.pos[2]+.03,.40,h.door_z0+.03)
+                    outside_x=-b.dims[0]-.03
+                    routes=[[(outside_x,b.pos[1],transit_z),(b.pos[0],b.pos[1],transit_z),tuple(b.pos)]]
+                    if not p.path_clear(b.dims,routes[0],list(occupied),h):
+                        routes=[]
+                if options.get('insert_then_shift', False) and not flip:
                     entry_center = taught_entry[:3]+tool_rotation.apply(estimated_offset)
                     entry_corner = cr.inv().apply(entry_center-translation)-origin-np.array(b.dims)/2
                     entry_y = min(max(entry_corner[1], h.door_y0), h.door_y1-b.dims[1])
@@ -297,20 +356,39 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
                     # Cross the pedestal at the taught entry height before
                     # descending near the doorway, rather than over the base.
                     route=[list(point) for point in route]
-                    route[0][0]=max(route[0][0],-.10)
+                    if not flip:route[0][0]=max(route[0][0],-.10)
                     restore_planning_context()
                     entry_pose=pose_for_q(base_q)[r.tcp]
-                    goals=[(label+'_ALIGN_OUTSIDE',entry_pose[:3],tool_rotation.as_quat())]
                     door_position,door_quaternion=target(route[0])
                     high_door=door_position.copy()
-                    high_door[2]=max(high_door[2],entry_pose[2])
+                    high_door[2]=max(high_door[2],1.45 if flip else entry_pose[2])
+                    if flip:
+                        # Put the entire swept box outside the doorway before rotating.
+                        # A conservative sphere covers every intermediate orientation.
+                        staging_position=high_door.copy()
+                        if fixture:
+                            staging_position,_=target((route[0][0],.08,route[0][2]))
+                            staging_position[2]=high_door[2]
+                        pivot_local=cr.inv().apply(staging_position-translation)
+                        sweep_radius=np.linalg.norm(estimated_offset)+np.linalg.norm(np.array(dimensions)/2)
+                        pivot_local[0]=h.door_x-sweep_radius-.05
+                        pivot=translation+cr.apply(pivot_local)
+                        pivot[2]=max(pivot[2],1.45)
+                        lift_position=entry_pose[:3].copy();lift_position[2]=pivot[2]
+                        align_position=lift_position.copy();align_position[1]=pivot[1]
+                        goals=[(label+'_FLIP_CLEARANCE',lift_position,entry_pose[3:]),
+                               (label+'_FLIP_LATERAL_CLEARANCE',align_position,entry_pose[3:]),
+                               (label+'_FLIP_OUTSIDE_POSITION',pivot,entry_pose[3:]),
+                               (label+'_FLIP_90_OUTSIDE',pivot,tool_rotation.as_quat())]
+                    else:
+                        goals=[(label+'_ALIGN_OUTSIDE',entry_pose[:3],tool_rotation.as_quat())]
                     goals.append((label+'_CLEAR_BASE_AT_ENTRY_HEIGHT',high_door,door_quaternion))
                     for leg,point in enumerate(route):
                         point=np.array(point).copy()
                         if leg==len(route)-1:point[2]+=.005
                         position,quaternion=target(point)
-                        name = f'{label}_PLACE_LEG{leg}'
-                        if options.get('insert_then_shift', False) and leg:
+                        name = (label+('_HORIZONTAL_PREINSERT','_HORIZONTAL_INSERT','_HORIZONTAL_LOWER')[leg]) if flip else f'{label}_PLACE_LEG{leg}'
+                        if options.get('insert_then_shift', False) and leg and not flip:
                             name = label+('_INSERT_DEPTH', '_SHIFT_LATERAL', '_LOWER_FINAL')[leg-1]
                         goals.append((name,position,quaternion))
                     loaded,error=chain(base_q,goals)
@@ -331,6 +409,9 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
                     if options.get('release_vertical_lift_m') is not None:
                         world_lift = np.array([0., 0., options['release_vertical_lift_m']])
                         variants = [('direct', cr.inv().apply(world_lift).tolist())]
+                    if flip:
+                        delta = cr.inv().apply(-tool_rotation.apply([0,0,.12]))
+                        variants = [('horizontal_normal',delta.tolist())]
                     for withdrawal,separation_delta in variants:
                         lift=separation_delta[2]
                         # Only the original suction/source contact exemption
@@ -359,8 +440,15 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
                                 empty_goals.append((f'{label}_EMPTY_EXIT{leg}',position,release_tcp[3:]))
                         # Primary path is a single checked Cartesian translation
                         # to taught entry, retaining release heading until outside.
-                        empty_goals.extend([(label+'_EMPTY_DIRECT_ENTRY_POSITION',taught_entry[:3],release_tcp[3:]),
-                            (label+'_EMPTY_ENTRY_HEADING',taught_entry[:3],taught_entry[3:]),
+                        return_entry = taught_entry.copy()
+                        if fixture:
+                            # Retract horizontally through the same free lane before
+                            # changing heading or crossing the occupied stack.
+                            exit_position,_=target(route[0])
+                            empty_goals.append((label+'_HORIZONTAL_EMPTY_EXIT',exit_position,release_tcp[3:]))
+                            return_entry = taught_entry.copy()
+                        empty_goals.extend([(label+'_EMPTY_DIRECT_ENTRY_POSITION',return_entry[:3],release_tcp[3:]),
+                            (label+'_EMPTY_ENTRY_HEADING',return_entry[:3],return_entry[3:]),
                             (label+'_EMPTY_TAUGHT_LIFT',taught_lift[:3],taught_lift[3:]),
                             (label+'_RETURN_OBSERVATION',observation[:3],observation[3:])])
                         remainder,last_error=chain(separated_q,empty_goals)

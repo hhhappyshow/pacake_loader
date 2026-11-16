@@ -100,7 +100,7 @@ def initialize_worker(out, catalog, waypoints, planner_options=None):
             raise ValueError('Observed catalog requires three positive finite dimensions per box')
     elif not sizes or not all(np.allclose(size,[.55,.40,.25],rtol=0,atol=1e-9) for size in sizes):
         raise ValueError('This worker implements the declared uniform20 task only')
-    runtime = make_runtime(out,sizes,site_urdf=(planner_options or {}).get('site_urdf'))
+    runtime = make_runtime(out,sizes,site_urdf=(planner_options or {}).get('site_urdf'),static_boxes=(planner_options or {}).get('static_boxes'))
     runtime.planner_options = dict(planner_options or {})
     _WORKER = dict(runtime=runtime,helper=place_and_return,Box=Box,out=out,
                    waypoints=deepcopy(waypoints),catalog=sizes,requests=0,
@@ -164,7 +164,7 @@ def plan_in_worker(request):
             from perception.suitcase_capture import make_runtime
             catalog = deepcopy(worker['catalog']);catalog[source_index] = dimensions
             r = make_runtime(worker['out']/f'current_model_{worker["requests"]}', catalog,
-                             site_urdf=worker['runtime'].planner_options.get('site_urdf'))
+                             site_urdf=worker['runtime'].planner_options.get('site_urdf'),static_boxes=worker['runtime'].planner_options.get('static_boxes'))
             r.planner_options = dict(worker['runtime'].planner_options)
             worker['runtime'] = r;worker['catalog'] = catalog
             response['current_model_rebuilt'] = True
@@ -191,6 +191,13 @@ def plan_in_worker(request):
         for label,pose in fixed.items():
             body = r.model.body_label.index(label)
             r.fixed[body] = np.asarray(pose,dtype=float).copy()
+        if request.get('pickup_start_q') is not None:
+            from straight_place.pick_preflight import check_pick_transfer
+            r.collision.arrived=set(range(source_index+1));r.collision.current_source=source_index
+            response['pickup_preflight']=check_pick_transfer(r,request['pickup_start_q'],contact,predicted,
+                worker['waypoints']['post_pick_lift']['q_rad'],source_index)
+            entry_q=np.asarray(response['pickup_preflight']['end_q'])
+            r.history.clear();r.qs.clear();r.stages.clear();r.simtime.clear();r.t=0.
         r.q=entry_q.copy();r.w.q[:6]=entry_q
         r.w.held=r.boxes[source_index]
         r.w.grip_offset=np.array(predicted['offset_m'])

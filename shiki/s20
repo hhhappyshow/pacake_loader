@@ -45,6 +45,7 @@ def main():
     output = ROOT / 'experiments/s20_online_mixed8_20261024/runs' / f'{action}_{stamp}'
     command = [str(ROOT / 'reproductions/nvidia_curobo_v2_20261023/.venv/bin/python'),
                str(DEPLOYMENT / 'online_session.py'), *defaults, '--output', str(output), *extra]
+    os.environ['PYTHONNOUSERSITE'] = '1'
     os.chdir(ROOT)
     os.execv(command[0], command)
 

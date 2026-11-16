@@ -25,7 +25,7 @@ from scipy import ndimage
 from scipy.spatial.transform import Rotation as R,Slerp
 from observed_cycle import Runtime
 from perception.yolo_sim_perception import render_capture,infer
-from perception.envelope_grasp import load_tool,solve_grasp,fit_box,fit_plane
+from perception.envelope_grasp import load_tool,solve_grasp,fit_box
 from compare import SCENE
 
 
@@ -42,29 +42,26 @@ def main():
     p.add_argument('--weights',type=Path,default=HERE/'perception/weights/yolo11s-seg.pt')
     p.add_argument('--free-speed-m-s',type=float,default=.30,help='Desired Cartesian cruise speed, not a hardware limit')
     p.add_argument('--seed',type=int,default=73)
-    p.add_argument('--arrivals',choices=('four20','three20-one24','four20-two24'),default='four20')
+    p.add_argument('--arrivals',choices=('one20','four20','three20-one24','four20-two24'),default='four20')
+    p.add_argument('--placement-mode',choices=('upright','flip-horizontal','stacked-width'),default='upright')
     p.add_argument('--size-noise',type=float,default=0.,help='Independent uniform relative variation of each generated physical dimension')
-    p.add_argument('--pickup-center',type=float,nargs=2,default=[.30,1.15],metavar=('X','Y'),
-        help='Simulation staging area center in world XY, not a perception target input')
     p.add_argument('--waypoints',type=Path,default=HERE/'pick_waypoints.json')
     p.add_argument('--site-urdf',type=Path,help='Use expanded current site robot/tool/camera mounting instead of legacy construction')
-    p.add_argument('--camera-calibration',type=Path,help='Actual saved D555 driver transforms and CameraInfo, no hardware read')
-    p.add_argument('--depth-arrival-fallback',action='store_true',help='Known single-suitcase stream: use current depth component if YOLO misses; record separately')
-    p.add_argument('--sensor-cuboids',action='store_true',help='Use the same cuboid for visible depth and collision geometry; no textured-size mismatch')
     p.add_argument('--require-unclipped-view',action='store_true',help='Optional operator-enabled observation gate; off by default')
     p.add_argument('--planning-mode',choices=('async','serial'),default='async')
     p.add_argument('--candidate-order',choices=('greedy','reach','diverse'),default='greedy')
     p.add_argument('--layout-prior',choices=('frontier','contact'),default='frontier')
     p.add_argument('--record-decisions',action='store_true',help='Save actual candidate decisions for synchronized replay')
     p.add_argument('--max-candidates',type=int,default=10)
-    p.add_argument('--neighbor-gap-m',type=float,default=0.,help='Nominal side spacing between neighboring boxes, not a collision tolerance')
-    p.add_argument('--min-support-coverage',type=float,default=.8,help='Geometric footprint support assumption; not a dynamics certificate')
-    p.add_argument('--layer-preference-band-m',type=float,default=0.,help='Group nearby top heights for ranking only; does not merge physical support planes')
     p.add_argument('--ik-knot-step-m',type=float,default=.08)
     p.add_argument('--endpoint-backend',choices=('scalar','batch'),default='batch')
     p.add_argument('--realtime',action='store_true',help='Pace simulated FK execution at the reference clock for live viewing')
+    p.add_argument('--browser-stream',action='store_true',help='Export local browser geometry and live body poses (no OpenGL)')
     p.add_argument('--saved-camera-only',action='store_true',help='Keep actual observation images; skip repeated live preview raytracing while moving')
-    args=p.parse_args();out=args.output;out.mkdir(parents=True,exist_ok=False)
+    args=p.parse_args()
+    if args.placement_mode != 'upright' and args.arrivals not in ('one20','four20'):
+        p.error('Flip modes require --arrivals one20 or four20')
+    out=args.output;out.mkdir(parents=True,exist_ok=False)
     waypoints=json.loads(args.waypoints.read_text()) if args.waypoints.is_file() else None
     os.environ.setdefault('YOLO_CONFIG_DIR',str(out/'yolo_config'))
     os.environ.setdefault('OMP_NUM_THREADS','2')
@@ -74,7 +71,7 @@ def main():
     detector=YOLO(str(args.weights))
     from suitcase_capture import make_runtime
     generation_rng=np.random.default_rng(args.seed)
-    classes={'four20':[20]*4,'three20-one24':[20,20,20,24],'four20-two24':[20,20,20,20,24,24]}
+    classes={'one20':[20],'four20':[20]*4,'three20-one24':[20,20,20,24],'four20-two24':[20,20,20,20,24,24]}
     size_classes=(classes[args.arrivals] if args.arrivals=='four20' else
         generation_rng.permutation(classes[args.arrivals]).tolist())
     nominal_sizes = {20:[.55,.4,.25],24:[.65,.45,.28]}
@@ -82,30 +79,13 @@ def main():
     factors=(generation_rng.uniform(1-args.size_noise,1+args.size_noise,(len(size_classes),3))
         if args.size_noise else np.ones((len(size_classes),3)))
     catalog=[(np.asarray(nominal_sizes[k])*factor).tolist() for k,factor in zip(size_classes,factors)]
-    r=make_runtime(out,catalog,site_urdf=args.site_urdf)
-    if args.sensor_cuboids:
-        flags=r.model.shape_flags.numpy();colors=r.model.shape_color.numpy()
-        palette=[(.2,.65,.7),(.9,.6,.2),(.65,.4,.75),(.4,.7,.35),(.85,.35,.4),(.35,.55,.85)]
-        for i,label in enumerate(r.model.shape_label):
-            if label.endswith('_collision_box'):
-                flags[i]|=int(newton.ShapeFlags.VISIBLE)
-                colors[i]=palette[r.boxes.index(int(r.model.shape_body.numpy()[i]))%len(palette)]
-            elif label.endswith('_suitcase_visual'):flags[i]&=~int(newton.ShapeFlags.VISIBLE)
-        r.model.shape_flags.assign(flags);r.model.shape_color.assign(colors)
-    if args.camera_calibration:
-        from deployment.received_to_observation import driver_transform
-        camera=json.loads(args.camera_calibration.read_text())
-        r.camera_driver_transform=driver_transform(camera['driver_static_transforms'],
-            'd555_check_link',camera['paired']['depth_frame'])
-        k=np.asarray(camera['info']['k']).reshape(3,3);v,u=np.indices((360,640))
-        directions=np.stack(((u-k[0,2])/k[0,0],-(v-k[1,2])/k[1,1],-np.ones_like(u)),axis=-1)
-        directions/=np.linalg.norm(directions,axis=-1,keepdims=True)
-        rays=r.rays.numpy();rays[0,:,:,1]=directions;r.rays.assign(rays)
-        shutil.copyfile(args.camera_calibration,out/'camera_calibration.json')
+    from straight_place.stacked_scene import three_layer_boxes
+    static_boxes = three_layer_boxes() if args.placement_mode == "stacked-width" else []
+    r=make_runtime(out,catalog,site_urdf=args.site_urdf,static_boxes=static_boxes)
     r.planner_options=dict(candidate_order=args.candidate_order,max_candidates=args.max_candidates,knot_step_m=args.ik_knot_step_m,endpoint_backend=args.endpoint_backend,layout_prior=args.layout_prior,record_decisions=args.record_decisions)
-    r.planner_options['neighbor_gap_m']=args.neighbor_gap_m
-    r.planner_options['min_support_coverage']=args.min_support_coverage
-    r.planner_options['layer_preference_band_m']=args.layer_preference_band_m
+    r.planner_options['flip_horizontal'] = args.placement_mode != 'upright'
+    r.planner_options['width_vertical'] = args.placement_mode == 'stacked-width'
+    r.planner_options['static_boxes'] = static_boxes
     if args.site_urdf:r.planner_options['site_urdf']=str(args.site_urdf.resolve())
     pose=json.loads(args.pose_json.read_text());r.q=np.array(pose['q_rad'])
     rng=np.random.default_rng(args.seed)
@@ -114,15 +94,13 @@ def main():
     r.collision.arrived=set();r.collision.current_source=None
     r.history.clear();r.qs.clear();r.stages.clear();r.simtime.clear();r.t=0.
     r.frame(r.q,'MEASURED_EMPTY_START')
+    browser_stream = None
+    if args.browser_stream:
+        from browser_viewer.stream import BrowserStream
+        browser_stream = BrowserStream(out/'web', r)
     report=dict(completed=False,scope=__doc__,source_catalog_m=catalog,asset_slots=len(catalog),
-        generation_only_size_classes=size_classes,arrivals_mode=args.arrivals,
+        preloaded_boxes=static_boxes,generation_only_size_classes=size_classes,arrivals_mode=args.arrivals,placement_mode=args.placement_mode,
         generation_only_size_factors=factors.tolist(),dimension_noise_fraction=args.size_noise,
-        generated_pickup_center_world_xy=args.pickup_center,
-        camera_calibration_source=str(args.camera_calibration) if args.camera_calibration else None,
-        camera_model='Ideal pinhole, saved real intrinsics/optical TF; no lens distortion or image noise' if args.camera_calibration else 'Legacy ideal camera model',
-        depth_arrival_fallback_enabled=args.depth_arrival_fallback,
-        min_support_coverage=args.min_support_coverage,
-        visible_cargo_geometry='same cuboid as collision proxy' if args.sensor_cuboids else 'textured rounded vintage mesh, separate cuboid collision proxy',
         initialization_wall_s=time.perf_counter()-MODULE_STARTED,
         initial_measured_pose=str(args.pose_json),grasp_center_offset_xy_m=[0.,0.],
         free_cruise_m_s=args.free_speed_m_s,last_10cm_speed_ratio=.5,
@@ -132,7 +110,6 @@ def main():
         hardware_motion=False,io_written=False,views=[],events=[],view_adjustments=0)
     shutil.copyfile(SCENE,out/'scene_tf.yaml')
     shutil.copyfile(__file__,out/'source_four20_async_cycle.py')
-    shutil.copyfile(HERE/'perception/yolo_sim_perception.py',out/'source_yolo_sim_perception.py')
     if waypoints:
         shutil.copyfile(args.waypoints,out/'pick_waypoints.json')
         report['waypoints_source']=str(args.waypoints)
@@ -145,7 +122,7 @@ def main():
     from straight_place.async_execute import revalidate_plan,commit_plan
     report.update(planning_mode=args.planning_mode,async_planning=[],
         timing_basis='Monotonic wall clock; recorded wall_times_s includes planning, observation and execution waits')
-    for name in ('async_sparse_place.py','async_execute.py','optimized_cycle_place.py','sparse_prior.py','contact_layout.py','batch_pose_ik.py'):
+    for name in ('async_sparse_place.py','async_execute.py','optimized_cycle_place.py','sparse_prior.py','contact_layout.py','batch_pose_ik.py','flip_geometry.py','stacked_scene.py','pick_preflight.py'):
         shutil.copyfile(HERE/'straight_place'/name,out/('source_'+name))
     pool=ProcessPoolExecutor(max_workers=1,mp_context=mp.get_context('spawn'),
         initializer=initialize_worker,initargs=(str(out/'planner_process'),[[.55,.4,.25]]*len(catalog),waypoints,r.planner_options))
@@ -157,6 +134,8 @@ def main():
     original_frame=r.frame
     def timed_frame(q,stage):
         original_frame(q,stage);wall_times.append(time.perf_counter())
+        if browser_stream:
+            browser_stream.update(r, report)
     r.frame=timed_frame
     def save_with_wall(result):
         # Same complete atomic snapshot/NPZ reader contract; defer DEFLATE to
@@ -180,6 +159,8 @@ def main():
             if active_future.done() and current['status']=='planning_during_pick_transfer':
                 current['status']='ready_during_pick_transfer'
         report['current_stage']=r.stages[-1] if r.stages else None
+        if browser_stream:
+            browser_stream.update(r, report, force=True)
         if args.realtime and not args.saved_camera_only:
             camera_folder=out/'live_camera';camera_folder.mkdir(exist_ok=True)
             r.model.bvh_build_shapes(r.state)
@@ -239,28 +220,8 @@ def main():
         observation_started=time.perf_counter()
         folder=out/f'view{view}';folder.mkdir()
         r.model.bvh_build_shapes(r.state)
-        render_started=time.perf_counter()
         rgb,cloud=render_capture(r,folder)
-        render_wall_s=time.perf_counter()-render_started
-        inference_started=time.perf_counter()
         record,mask,fitted=infer(detector,rgb,cloud,device='cpu',locked_center_world=locked)
-        if fitted is None and args.depth_arrival_fallback and locked is None:
-            finite=np.isfinite(cloud).all(axis=2)
-            workspace=finite & (abs(cloud[:,:,0])<.75) & (cloud[:,:,1]>1.) & (cloud[:,:,1]<2.4) & (cloud[:,:,2]>-.03) & (cloud[:,:,2]<.8)
-            floor=cloud[workspace]
-            ground=fit_plane(floor[floor[:,2]<=np.quantile(floor[:,2],.35)])
-            elevated=workspace & (cloud@ground[:3]+ground[3]>.07)
-            labels,count=ndimage.label(elevated)
-            if count:
-                counts=np.bincount(labels.ravel());counts[0]=0;mask=labels==counts.argmax()
-                fitted=fit_box(cloud[mask][::2],ground)
-                y,x=np.nonzero(mask);clipped=bool(mask[:3].any() or mask[-3:].any() or mask[:,:3].any() or mask[:,-3:].any())
-                fitted['selection_source']='Current depth component in known single-suitcase pickup workspace; YOLO missed'
-                record.update(status='DEPTH_COMPONENT_KNOWN_ARRIVAL',fitted=fitted,
-                    detection_bbox_xyxy=[int(x.min()),int(y.min()),int(x.max()),int(y.max())],
-                    completeness=dict(image_border_clipped=clipped),selection_source=fitted['selection_source'],
-                    semantic_class_from_task_prior=True,gt_mask_used=False,simulator_body_identity_used=False)
-                cv2.imwrite(str(folder/'depth_arrival_selection.png'),mask.astype('uint8')*255)
         if locked is not None and previous is not None:
             # A lost semantic label does not invalidate an already locked
             # metric target. Track visible elevated depth components, not IDs.
@@ -308,8 +269,6 @@ def main():
         cv2.imwrite(str(folder/'yolo_overlay.png'),infer.last_overlay)
         (folder/'result.json').write_text(json.dumps(record,indent=2))
         record.update(cycle=report.get('current_cycle'),trace_index=len(r.history)-1,view_index=view,
-            camera_render_and_save_wall_s=render_wall_s,
-            perception_after_render_wall_s=time.perf_counter()-inference_started,
             observation_completed_wall_s=time.perf_counter()-start,
             observation_wall_s=time.perf_counter()-observation_started)
         report['views'].append(record)
@@ -321,7 +280,7 @@ def main():
             cycle_started=time.perf_counter()
             report['current_cycle']=cycle+1
             body=r.boxes[cycle]
-            r.fixed[body]=np.r_[[*args.pickup_center,catalog[cycle][2]/2],R.from_euler('z',rng.uniform(-.30,.30)).as_quat()]
+            r.fixed[body]=np.r_[[.30,1.15,catalog[cycle][2]/2],R.from_euler('z',rng.uniform(-.30,.30)).as_quat()]
             r.collision.arrived.add(cycle);r.collision.current_source=cycle
             r.frame(r.q,'CURRENT_ARRIVAL_REVEALED')
             publish()
@@ -370,7 +329,6 @@ def main():
                 observed_dimensions_m=fitted['dimensions_m'],planning_dimensions_m=fitted['planning_dimensions_m'],
                 size_source=fitted.get('planning_size_source','Known uniform20 task prior'),
                 inferred_size_class_inches=fitted.get('inferred_size_class_inches',20)))
-            grasp_started=time.perf_counter()
             tool=HERE.parent/'s20_greedy_async_20261023/v2_s20_model_h100/s20_current.urdf'
             if args.site_urdf:
                 import importlib.util
@@ -392,12 +350,44 @@ def main():
             choice=min(choices,key=lambda c:(not c['full_envelope_fits'],round(c['max_overhang_m'],5),
                 c['rotation_from_observation_rad']+.5*(1-c['preferred_fixture_direction_score']))) if choices else None
             if choice is None:raise RuntimeError('Contact plate does not fit fitted top surface')
+            selected_future=None
+            if args.placement_mode=='stacked-width':
+                # Evaluate the complete observed-grasp pickup, loaded transfer,
+                # final orientation, insertion and empty return BEFORE contact.
+                report['grasp_plan_search']=[]
+                report.setdefault('grasp_plan_search_by_cycle',[]).append(dict(cycle=cycle+1,candidates=report['grasp_plan_search']))
+                feasible=[]
+                candidates=[c for c in choices if c['full_envelope_fits']]
+                for candidate_index,candidate in enumerate(candidates,1):
+                    report['computation_phase']=f'第 {cycle+1} 箱：检查抓取与装箱路径 {candidate_index}/{len(candidates)}'
+                    publish()
+                    candidate_mat=np.asarray(candidate['T_world_tcp'])
+                    contact=np.r_[candidate_mat[:3,3],R.from_matrix(candidate_mat[:3,:3]).as_quat()]
+                    trial=dict(fitted=fitted,planned_contact_tcp=contact.tolist(),
+                        pickup_start_q=r.q.tolist(),entry_q=waypoints['post_pick_lift']['q_rad'],
+                        scene_version=len(occupied),source_index=cycle,
+                        occupied=[asdict(v) for v in occupied],
+                        placed_world_poses={r.model.body_label[r.boxes[i]]:r.fixed[r.boxes[i]].tolist() for i in range(cycle)},
+                        request_id=f'grasp-{candidate["angle_deg"]}',dispatched_at=time.perf_counter())
+                    future=pool.submit(plan_in_worker,trial)
+                    while True:
+                        try:result=future.result(timeout=.5);break
+                        except TimeoutError:publish()
+                    row=dict(angle_deg=candidate['angle_deg'],ok=result['ok'],error=result.get('error'))
+                    if result['ok']:
+                        qs=np.asarray(result['joint_q'])
+                        cost=result['pickup_preflight']['joint_travel_rad']+float(np.linalg.norm(np.diff(qs,axis=0),axis=1).sum())
+                        row.update(total_joint_travel_rad=cost,pickup=result['pickup_preflight'])
+                        feasible.append((cost,candidate,future,trial))
+                    report['grasp_plan_search'].append(row);publish()
+                if not feasible:raise RuntimeError('No grasp has a complete collision-checked pick/place/return plan')
+                _,choice,selected_future,selected_request=min(feasible,key=lambda v:v[0])
+                report.pop('computation_phase',None)
+                report['grasp_plan_selection']='Minimum total joint travel among feasible full-envelope grasps; observed pickup and full place/return checked before contact'
             report['grasp']=choice
             report['grasp_heading_comparison']=[{k:c[k] for k in ('angle_deg','rotation_from_observation_rad',
                 'preferred_fixture_direction_score','max_overhang_m')} for c in choices]
             mat=np.array(choice['T_world_tcp']);top=mat[:3,3];quat=R.from_matrix(mat[:3,:3]).as_quat()
-            report['events'].append(dict(stage='GRASP_SELECTION',cycle=cycle+1,
-                planning_wall_s=time.perf_counter()-grasp_started,execution_wall_s=0.,reference_s=0.))
             # Use the fitted observed box center to associate the simulator actor
             # only when emulating contact; actor truth never supplies the target.
             estimated=np.array(fitted['T_world_box'])[:3,3]
@@ -411,12 +401,15 @@ def main():
             report['async_planning'].append(async_row)
             request=dict(fitted=fitted,planned_contact_tcp=np.r_[top,quat].tolist(),
                 request_id=f'cycle-{cycle+1}',
-                entry_q=waypoints['container_entry']['q_rad'],scene_version=len(occupied),
+                entry_q=waypoints['post_pick_lift' if args.placement_mode=='stacked-width' else 'container_entry']['q_rad'],scene_version=len(occupied),
                 source_index=cycle,occupied=[asdict(v) for v in occupied],
                 placed_world_poses={r.model.body_label[r.boxes[i]]:r.fixed[r.boxes[i]].tolist() for i in range(cycle)},
                 dispatched_at=dispatch)
             (out/f'background_request_{cycle+1}.json').write_text(json.dumps(request,indent=2))
-            active_future=pool.submit(plan_in_worker,request)
+            if selected_future is not None:
+                request=selected_request
+                (out/f'background_request_{cycle+1}.json').write_text(json.dumps(request,indent=2))
+            active_future=selected_future if selected_future is not None else pool.submit(plan_in_worker,request)
             if args.planning_mode=='serial':
                 before=time.perf_counter();active_future.result()
                 async_row['serial_pre_pick_wait_s']=time.perf_counter()-before
@@ -434,7 +427,7 @@ def main():
                 lift=taught_pose('post_pick_lift')
                 move([(lift[:3],lift[3:])],'OPERATOR_TAUGHT_LIFT_POINT')
                 report['terminal_point']='operator_taught_post_pick_lift; container entry not yet supplied'
-                if waypoints.get('container_entry'):
+                if waypoints.get('container_entry') and args.placement_mode != 'stacked-width':
                     entry=taught_pose('container_entry')
                     move([(entry[:3],entry[3:])],'OPERATOR_TAUGHT_CONTAINER_ENTRY')
                     report['terminal_point']='operator_taught_container_entry; placement not yet executed'
@@ -494,5 +487,4 @@ def main():
         print(json.dumps({k:report.get(k) for k in ('completed','error','view_adjustments','wall_s')},indent=2))
 
 if __name__=='__main__':main()
-
 

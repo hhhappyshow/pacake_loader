@@ -169,7 +169,7 @@ def render(args,policy,vendor,empty_xml,q,world,report):
     import newton
     import newton.viewer
     wp.config.kernel_cache_dir = str(args.output/'warp_cache')
-    wp.set_device('cuda:0')
+    wp.set_device('cuda:0' if wp.is_cuda_available() else 'cpu')
     sys.path.insert(0,str(policy))
     import roboticarm_newton as native
     native.make_robot_urdf = lambda *a,**k: ET.tostring(empty_xml,encoding='unicode')
