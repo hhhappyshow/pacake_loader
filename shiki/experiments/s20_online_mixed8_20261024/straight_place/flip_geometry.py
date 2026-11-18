@@ -27,7 +27,7 @@ def rotated_extent(dimensions, box_rotation, container_rotation):
 
 
 def sample_metrics(tcp_pose, stage, offset, attachment, dimensions, container_rotation,
-                   container_translation, door_x, width_vertical=False):
+                   container_translation, door_x, width_vertical=False, expected_tool_quaternion=None):
     """Check actual FK, not requested pose; original rigid attachment is retained."""
     rotation=R.from_quat(np.asarray(tcp_pose)[3:])
     metrics={}
@@ -36,11 +36,13 @@ def sample_metrics(tcp_pose, stage, offset, attachment, dimensions, container_ro
         metrics['horizontal_error_deg']=float(np.degrees(np.arcsin(np.clip(abs(normal[2]),0,1))))
         inward=container_rotation.apply([1.,0.,0.]);inward[2]=0;inward/=np.linalg.norm(inward)
         metrics['inward_alignment']=float(normal@inward)
-        if width_vertical:
+        if expected_tool_quaternion is not None:
+            metrics['target_orientation_error_deg']=float(np.degrees((R.from_quat(expected_tool_quaternion).inv()*rotation).magnitude()))
+        elif width_vertical:
             box_rotation=rotation*attachment
             metrics['width_vertical_error_deg']=float(np.degrees(np.arccos(np.clip(abs(box_rotation.apply([0,1,0])[2]),0,1))))
             metrics['length_horizontal_error_deg']=float(np.degrees(np.arcsin(np.clip(abs(box_rotation.apply([1,0,0])[2]),0,1))))
-    if stage.endswith('_FLIP_90_OUTSIDE'):
+    if stage.endswith('_FLIP_90_OUTSIDE') or '_FLIP_BLEND_' in stage or stage.endswith('_FLIP_COUPLED_OUTSIDE'):
         box_rotation=rotation*attachment
         center=np.asarray(tcp_pose)[:3]+rotation.apply(offset)
         local_center=container_rotation.inv().apply(center-container_translation)
@@ -50,6 +52,8 @@ def sample_metrics(tcp_pose, stage, offset, attachment, dimensions, container_ro
 
 
 def constraint_error(metrics):
+    if metrics.get('target_orientation_error_deg',0.)>2.:
+        return 'tilted_target_orientation_error_exceeds_2deg'
     if metrics.get('width_vertical_error_deg',0.) > 2. or metrics.get('length_horizontal_error_deg',0.) > 2.:
         return 'box_width_not_vertical_or_length_not_horizontal_within_2deg'
     if metrics.get('horizontal_error_deg',0.) > 1.:

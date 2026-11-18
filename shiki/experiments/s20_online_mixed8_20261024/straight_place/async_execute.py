@@ -21,10 +21,26 @@ def revalidate_plan(r, plan, scene_version):
     difference=float(np.max(abs(qs[0]-r.q)))
     count=max(2,int(np.ceil(difference/.02))+1)
     bridge=np.linspace(r.q,qs[0],count)[1:-1]
+    policy=getattr(r,'planner_options',{}).get('joint_policy')
+    if policy and len(bridge):
+        from straight_place.joint_quality import retime
+        bridge=retime(np.vstack([r.q,bridge,qs[0]]),count*.02,policy)[:-1]
     qs=np.concatenate([bridge,qs]);stages=['ASYNC_ENTRY_BRANCH_BRIDGE']*len(bridge)+stages
     detail=dict(accepted=False,scene_version=scene_version,entry_joint_difference_rad=difference,
         samples=len(qs),attachment_source='actual post-contact attachment; background prediction not trusted as actual',
         intended_release_contact='Original suction/source contact only during separation; strict CAD afterward')
+    from straight_place.joint_quality import check_margin
+    try:check_margin(qs,r.ik.model,getattr(r,'planner_options',{}).get('joint_policy'))
+    except ValueError as exc:
+        detail.update(reason=str(exc))
+        return None,detail
+    if policy:
+        from straight_place.joint_quality import assess
+        quality=assess(np.vstack([r.q,qs]),r.ik.model.joint_limit_lower.numpy(),r.ik.model.joint_limit_upper.numpy())
+        detail['joint_quality']=quality
+        if max(quality['max_speed_deg_s'])>policy['speed_deg_s']+1e-3 or max(quality['max_acceleration_deg_s2'])>policy['acceleration_deg_s2']+1e-3:
+            detail.update(reason='actual_reference_joint_rate_limit')
+            return None,detail
     previous=None
     flip=getattr(r,'planner_options',{}).get('flip_horizontal',False)
     if flip:
@@ -57,7 +73,8 @@ def revalidate_plan(r, plan, scene_version):
             if flip:
                 tcp_pose=r.w.fk.body_q.numpy()[r.tcp]
                 metrics=sample_metrics(tcp_pose,stage,offset,rotation,dimensions,container_rotation,
-                                       np.asarray(tf['translation']),r.hull.door_x,width_vertical=r.planner_options.get('width_vertical',False))
+                                       np.asarray(tf['translation']),r.hull.door_x,width_vertical=r.planner_options.get('width_vertical',False),
+                                       expected_tool_quaternion=plan['placement'].get('tilted_support',{}).get('expected_tool_quaternion'))
                 reason=constraint_error(metrics)
                 if reason:
                     detail.update(reason=reason,stage=stage,sample=index,metrics=metrics)

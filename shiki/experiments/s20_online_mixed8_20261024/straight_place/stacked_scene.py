@@ -7,6 +7,39 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 
+# User inventory in centimetres, in the supplied order. IDs remain stable when
+# sorting for assembly: Base_01 is always the user's first base box.
+BASE14_CM = [(34,22,55),(37,23,58),(40,30,63),(40,26,63),
+             (42,25,68),(38,22,40),(38,23,63),(47,29,74),
+             (44,27,71),(47,26,72),(33,21,53),(34,21,53)]
+ARRIVAL14_CM = [(35,23,54),(36,23,54)]
+
+
+def twelve_box_fixture():
+    """Three columns, four levels; longest edge points into the container.
+
+    First two columns finish at 0.99 m, the third at 0.97 m. Their upper
+    footprints are aligned towards their common 20 mm gap, allowing a box
+    to bridge them without an unsupported centre of mass. Geometric design
+    only: cardboard stiffness, loads and suction capacity are not modelled.
+    All coordinates are lower corners relative to door / inner-y0 / floor.
+    """
+    columns = [([3,4,1,11], .08, .40, 'right'),
+               ([8,10,2,12], .50, .47, 'left'),
+               ([9,5,7,6], .99, .44, 'center')]
+    boxes=[]
+    for column,(ids,y,width,alignment) in enumerate(columns,1):
+        z=0.
+        for level,number in enumerate(ids,1):
+            lateral,height,depth=np.asarray(BASE14_CM[number-1],float)/100
+            yy=y+(width-lateral)*(1. if alignment=='right' else .5 if alignment=='center' else 0.)
+            boxes.append(dict(id=f'Base_{number:02d}',inventory_id=number,
+                column=column,level=level,dims=[float(depth),float(lateral),float(height)],
+                pos=[float(.42-depth/2),float(yy),float(round(z,8))]))
+            z+=height
+    return sorted(boxes,key=lambda b:(b['level'],b['column']))
+
+
 def three_layer_boxes():
     # Two depth rows and three lateral columns, repeated through three layers.
     # Adjacent boxes meet at their faces; layers have matching support footprints.
