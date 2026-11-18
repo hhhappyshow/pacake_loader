@@ -15,7 +15,7 @@
       "candidate_order": "greedy",
       "max_candidates": 10,
       "horizontal_row_first": true,
-      "release_vertical_lift_m": 0.2,
+      "release_vertical_lift_m": 0.05,
       "insert_then_shift": true,
       "neighbor_gap_m": 0.05,
       "attachment_estimate": "observed_top_obb",

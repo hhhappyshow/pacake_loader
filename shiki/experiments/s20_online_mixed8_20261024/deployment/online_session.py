@@ -36,6 +36,19 @@ def main():
         help='Operator mode is supervised and interactive; it does not infer pressure from DI0')
     p.add_argument('--native-speed-scale',type=float,default=1.,
         help='Native motion multiplier; does not shorten vacuum confirmation or planning')
+    p.add_argument('--place-speed-scale',type=float,default=None,
+        help='Speed scale applied only to the place execution dispatch (place + empty return)')
+    p.add_argument('--return-speed-scale',type=float,default=None,
+        help='Speed scale for the final empty-return stream only (faster: the tool is empty)')
+    p.add_argument('--servo-head-taper-points',type=int,default=0,
+        help='Passed to the bridge: source points at the head of every streamed '
+             'trajectory that run at --servo-head-taper-scale; 0 disables')
+    p.add_argument('--servo-head-taper-scale',type=float,default=.15,
+        help='Passed to the bridge: absolute speed scale for the head taper region')
+    p.add_argument('--native-backend',choices=('native','movej_chain','movej_quintic','servoj_replay'),default='native',
+        help='native: MovePathJ upload; movej_chain: blended MoveJ bursts; '
+             'movej_quintic: C2 quintic Hermite resampling then one blended MoveJ burst; '
+             'servoj_replay: stream the source trajectory at 20 ms via PushServoJ')
     p.add_argument('--observation',type=Path,help='Offline replay of a captured input, never executable')
     p.add_argument('--preview-rounds',type=int,default=1,
         help='Offline only: repeat the recorded input to exercise accumulated occupancy')
@@ -47,6 +60,11 @@ def main():
     if a.vacuum_feedback=='operator' and a.execution!='native':
         raise ValueError('Operator confirmation is implemented only for the native execution option')
     native_args=['--speed-scale',str(a.native_speed_scale),'--vacuum-feedback',a.vacuum_feedback] if a.execution=='native' else []
+    if a.execution=='native' and a.native_backend!='native':
+        native_args+=['--backend',a.native_backend]
+    if a.execution=='native' and a.servo_head_taper_points:
+        native_args+=['--servo-head-taper-points',str(a.servo_head_taper_points),
+            '--servo-head-taper-scale',str(a.servo_head_taper_scale)]
     if a.rounds<1:raise ValueError('rounds must be positive')
     if a.execute and a.observation:raise ValueError('Real execution requires a fresh observation')
     if a.preview_rounds<1 or a.execute and a.preview_rounds!=1:
@@ -82,6 +100,7 @@ def main():
         contact_offset_z_m=a.contact_offset_z_m,
         vacuum_confirmation_source=a.vacuum_feedback,
         native_speed_scale=a.native_speed_scale if a.execution=='native' else None,
+        place_speed_scale=a.place_speed_scale if a.execution=='native' else None,
         preview_rounds=a.preview_rounds,repeated_input_preview=a.preview_rounds>1,
         completed_hardware_cycles=0,occupancy_source='planned_release_pose_assumption')
     workers=[]
@@ -213,7 +232,12 @@ def main():
                 args=[f'{REMOTE}/{REL}/s20-device',cycle_command,'--cycle',target+'/cycle.json',
                     '--action','/elfin_arm_controller/follow_joint_trajectory','--execute',
                     '--output',remote_out+'/'+name]
-                if place_only:args+=['--place-only','--initial-holding']
+                if place_only:
+                    args+=['--place-only','--initial-holding']
+                    if a.place_speed_scale is not None:
+                        args+=['--place-speed-scale',str(a.place_speed_scale)]
+                    if a.return_speed_scale is not None:
+                        args+=['--return-speed-scale',str(a.return_speed_scale)]
                 args+=native_args
                 remote_error=None
                 try:

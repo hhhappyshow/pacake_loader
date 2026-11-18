@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Wrapper for ./s20: supplies the user-space FCL/octomap libraries that
+# python-fcl needs (libfcl.so.0.7 etc. live in ../.deps_fcl, no root install).
+set -euo pipefail
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+export LD_LIBRARY_PATH="$here/../.deps_fcl/usr/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$here/s20" "$@"
