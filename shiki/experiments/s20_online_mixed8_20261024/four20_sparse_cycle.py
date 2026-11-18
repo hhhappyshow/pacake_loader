@@ -42,8 +42,9 @@ def main():
     p.add_argument('--weights',type=Path,default=HERE/'perception/weights/yolo11s-seg.pt')
     p.add_argument('--free-speed-m-s',type=float,default=.30,help='Desired Cartesian cruise speed, not a hardware limit')
     p.add_argument('--seed',type=int,default=73)
-    p.add_argument('--arrivals',choices=('one20','four20','three20-one24','four20-two24'),default='four20')
-    p.add_argument('--placement-mode',choices=('upright','flip-horizontal','stacked-width'),default='upright')
+    p.add_argument('--arrivals',choices=('one20','four20','three20-one24','four20-two24','two14'),default='four20')
+    p.add_argument('--placement-mode',choices=('upright','flip-horizontal','stacked-width','stacked14'),default='upright')
+    p.add_argument('--stack14-region',choices=('both','right-middle','left-middle'),default='both')
     p.add_argument('--size-noise',type=float,default=0.,help='Independent uniform relative variation of each generated physical dimension')
     p.add_argument('--waypoints',type=Path,default=HERE/'pick_waypoints.json')
     p.add_argument('--site-urdf',type=Path,help='Use expanded current site robot/tool/camera mounting instead of legacy construction')
@@ -59,8 +60,10 @@ def main():
     p.add_argument('--browser-stream',action='store_true',help='Export local browser geometry and live body poses (no OpenGL)')
     p.add_argument('--saved-camera-only',action='store_true',help='Keep actual observation images; skip repeated live preview raytracing while moving')
     args=p.parse_args()
-    if args.placement_mode != 'upright' and args.arrivals not in ('one20','four20'):
+    if args.placement_mode != 'upright' and args.arrivals not in ('one20','four20','two14'):
         p.error('Flip modes require --arrivals one20 or four20')
+    if (args.placement_mode=='stacked14') != (args.arrivals=='two14'):
+        p.error('Use --placement-mode stacked14 together with --arrivals two14')
     out=args.output;out.mkdir(parents=True,exist_ok=False)
     waypoints=json.loads(args.waypoints.read_text()) if args.waypoints.is_file() else None
     os.environ.setdefault('YOLO_CONFIG_DIR',str(out/'yolo_config'))
@@ -71,7 +74,7 @@ def main():
     detector=YOLO(str(args.weights))
     from suitcase_capture import make_runtime
     generation_rng=np.random.default_rng(args.seed)
-    classes={'one20':[20],'four20':[20]*4,'three20-one24':[20,20,20,24],'four20-two24':[20,20,20,20,24,24]}
+    classes={'one20':[20],'four20':[20]*4,'three20-one24':[20,20,20,24],'four20-two24':[20,20,20,20,24,24],'two14':[20,20]}
     size_classes=(classes[args.arrivals] if args.arrivals=='four20' else
         generation_rng.permutation(classes[args.arrivals]).tolist())
     nominal_sizes = {20:[.55,.4,.25],24:[.65,.45,.28]}
@@ -79,13 +82,18 @@ def main():
     factors=(generation_rng.uniform(1-args.size_noise,1+args.size_noise,(len(size_classes),3))
         if args.size_noise else np.ones((len(size_classes),3)))
     catalog=[(np.asarray(nominal_sizes[k])*factor).tolist() for k,factor in zip(size_classes,factors)]
-    from straight_place.stacked_scene import three_layer_boxes
-    static_boxes = three_layer_boxes() if args.placement_mode == "stacked-width" else []
+    from straight_place.stacked_scene import three_layer_boxes, twelve_box_fixture, ARRIVAL14_CM
+    if args.arrivals=='two14':
+        catalog=[[c/100,a/100,b/100] for a,b,c in ARRIVAL14_CM]
+    static_boxes = twelve_box_fixture() if args.placement_mode=='stacked14' else three_layer_boxes() if args.placement_mode in ('stacked-width','stacked14') else []
     r=make_runtime(out,catalog,site_urdf=args.site_urdf,static_boxes=static_boxes)
     r.planner_options=dict(candidate_order=args.candidate_order,max_candidates=args.max_candidates,knot_step_m=args.ik_knot_step_m,endpoint_backend=args.endpoint_backend,layout_prior=args.layout_prior,record_decisions=args.record_decisions)
     r.planner_options['flip_horizontal'] = args.placement_mode != 'upright'
-    r.planner_options['width_vertical'] = args.placement_mode == 'stacked-width'
+    r.planner_options['width_vertical'] = args.placement_mode in ('stacked-width','stacked14')
     r.planner_options['static_boxes'] = static_boxes
+    if args.placement_mode=='stacked14':
+        r.planner_options.update(fixture14=True, blended_flip=True, stack14_region=args.stack14_region,
+            joint_policy=dict(margin_deg=15.,speed_deg_s=25.,acceleration_deg_s2=50.))
     if args.site_urdf:r.planner_options['site_urdf']=str(args.site_urdf.resolve())
     pose=json.loads(args.pose_json.read_text());r.q=np.array(pose['q_rad'])
     rng=np.random.default_rng(args.seed)
@@ -107,7 +115,9 @@ def main():
         vacuum='ideal attachment event, no pressure sensor or physical seal validation',
         observation_quality_gate_enabled=args.require_unclipped_view,
         running_simulation=True,wall_clock_paced=args.realtime,
-        hardware_motion=False,io_written=False,views=[],events=[],view_adjustments=0)
+        hardware_motion=False,io_written=False,views=[],events=[],view_adjustments=0,
+        joint_policy=r.planner_options.get('joint_policy'),
+        joint_limits_rad=dict(lower=r.ik.model.joint_limit_lower.numpy()[:6].tolist(),upper=r.ik.model.joint_limit_upper.numpy()[:6].tolist()))
     shutil.copyfile(SCENE,out/'scene_tf.yaml')
     shutil.copyfile(__file__,out/'source_four20_async_cycle.py')
     if waypoints:
@@ -122,7 +132,7 @@ def main():
     from straight_place.async_execute import revalidate_plan,commit_plan
     report.update(planning_mode=args.planning_mode,async_planning=[],
         timing_basis='Monotonic wall clock; recorded wall_times_s includes planning, observation and execution waits')
-    for name in ('async_sparse_place.py','async_execute.py','optimized_cycle_place.py','sparse_prior.py','contact_layout.py','batch_pose_ik.py','flip_geometry.py','stacked_scene.py','pick_preflight.py'):
+    for name in ('async_sparse_place.py','async_execute.py','optimized_cycle_place.py','sparse_prior.py','contact_layout.py','batch_pose_ik.py','flip_geometry.py','stacked_scene.py','pick_preflight.py','joint_quality.py','tilted_support.py'):
         shutil.copyfile(HERE/'straight_place'/name,out/('source_'+name))
     pool=ProcessPoolExecutor(max_workers=1,mp_context=mp.get_context('spawn'),
         initializer=initialize_worker,initargs=(str(out/'planner_process'),[[.55,.4,.25]]*len(catalog),waypoints,r.planner_options))
@@ -199,6 +209,10 @@ def main():
             last_p,last_r=position,quat
         curve=CubicSpline(ticks,knots,bc_type=((1,np.zeros(6)),(1,np.zeros(6))))
         grid=curve(np.linspace(0,ticks[-1],max(2,int(np.ceil(ticks[-1]/.02))+1)))
+        from straight_place.joint_quality import retime, check_margin
+        policy=r.planner_options.get('joint_policy')
+        grid=retime(grid,ticks[-1],policy)
+        check_margin(grid,r.ik.model,policy)
         for candidate_q in grid:
             if not r.validate(candidate_q):raise RuntimeError(f'{stage}: CAD {r.collision.last_hits}')
         planning_wall_s=time.perf_counter()-began
@@ -208,7 +222,7 @@ def main():
             if frame%10==0:publish()
             if args.realtime:time.sleep(max(0.,execution_start+frame*.02-time.perf_counter()))
         report['events'].append(dict(stage=stage,cycle=report['current_cycle'],planning_wall_s=planning_wall_s,
-            execution_wall_s=time.perf_counter()-execution_start,reference_s=ticks[-1]))
+            execution_wall_s=time.perf_counter()-execution_start,reference_s=(len(grid)-1)*.02))
         publish()
 
     def taught_pose(name):
@@ -312,7 +326,11 @@ def main():
             report['selected_top_image_clipped']=record['completeness']['image_border_clipped']
             if args.require_unclipped_view and report['selected_top_image_clipped']:
                 raise RuntimeError('Selected top remains clipped after the one allowed adjustment')
-            if args.size_noise or args.arrivals=='four20-two24':
+            if args.arrivals=='two14':
+                fitted['planning_dimensions_m']=catalog[cycle]
+                fitted['planning_size_source']='User measured current box, explicit loading order; RGB-D supplies pose'
+                r.planner_options['current_dimensions_m']=catalog[cycle]
+            elif args.size_noise or args.arrivals=='four20-two24':
                 fitted['planning_dimensions_m']=list(fitted['dimensions_m'])
                 fitted['planning_size_source']='Current RGB-D fitted dimensions; no nominal-class snapping or future dimensions'
                 r.planner_options['current_dimensions_m']=fitted['planning_dimensions_m']
@@ -351,7 +369,7 @@ def main():
                 c['rotation_from_observation_rad']+.5*(1-c['preferred_fixture_direction_score']))) if choices else None
             if choice is None:raise RuntimeError('Contact plate does not fit fitted top surface')
             selected_future=None
-            if args.placement_mode=='stacked-width':
+            if args.placement_mode in ('stacked-width','stacked14'):
                 # Evaluate the complete observed-grasp pickup, loaded transfer,
                 # final orientation, insertion and empty return BEFORE contact.
                 report['grasp_plan_search']=[]
@@ -377,13 +395,18 @@ def main():
                     if result['ok']:
                         qs=np.asarray(result['joint_q'])
                         cost=result['pickup_preflight']['joint_travel_rad']+float(np.linalg.norm(np.diff(qs,axis=0),axis=1).sum())
-                        row.update(total_joint_travel_rad=cost,pickup=result['pickup_preflight'])
+                        if r.planner_options.get('joint_policy'):
+                            from straight_place.joint_quality import assess
+                            quality=assess(qs,r.ik.model.joint_limit_lower.numpy(),r.ik.model.joint_limit_upper.numpy())
+                            cost=quality['score']+result['pickup_preflight']['joint_travel_rad']
+                            row['joint_quality']=quality
+                        row.update(selection_cost=cost,pickup=result['pickup_preflight'])
                         feasible.append((cost,candidate,future,trial))
                     report['grasp_plan_search'].append(row);publish()
                 if not feasible:raise RuntimeError('No grasp has a complete collision-checked pick/place/return plan')
                 _,choice,selected_future,selected_request=min(feasible,key=lambda v:v[0])
                 report.pop('computation_phase',None)
-                report['grasp_plan_selection']='Minimum total joint travel among feasible full-envelope grasps; observed pickup and full place/return checked before contact'
+                report['grasp_plan_selection']=('Joint travel, largest-joint travel and limit-margin cost among feasible full-envelope grasps; full pickup/place/return checked' if r.planner_options.get('joint_policy') else 'Minimum total joint travel among feasible full-envelope grasps; observed pickup and full place/return checked before contact')
             report['grasp']=choice
             report['grasp_heading_comparison']=[{k:c[k] for k in ('angle_deg','rotation_from_observation_rad',
                 'preferred_fixture_direction_score','max_overhang_m')} for c in choices]
@@ -401,7 +424,7 @@ def main():
             report['async_planning'].append(async_row)
             request=dict(fitted=fitted,planned_contact_tcp=np.r_[top,quat].tolist(),
                 request_id=f'cycle-{cycle+1}',
-                entry_q=waypoints['post_pick_lift' if args.placement_mode=='stacked-width' else 'container_entry']['q_rad'],scene_version=len(occupied),
+                entry_q=waypoints['post_pick_lift' if args.placement_mode in ('stacked-width','stacked14') else 'container_entry']['q_rad'],scene_version=len(occupied),
                 source_index=cycle,occupied=[asdict(v) for v in occupied],
                 placed_world_poses={r.model.body_label[r.boxes[i]]:r.fixed[r.boxes[i]].tolist() for i in range(cycle)},
                 dispatched_at=dispatch)
@@ -427,7 +450,7 @@ def main():
                 lift=taught_pose('post_pick_lift')
                 move([(lift[:3],lift[3:])],'OPERATOR_TAUGHT_LIFT_POINT')
                 report['terminal_point']='operator_taught_post_pick_lift; container entry not yet supplied'
-                if waypoints.get('container_entry') and args.placement_mode != 'stacked-width':
+                if waypoints.get('container_entry') and args.placement_mode not in ('stacked-width','stacked14'):
                     entry=taught_pose('container_entry')
                     move([(entry[:3],entry[3:])],'OPERATOR_TAUGHT_CONTAINER_ENTRY')
                     report['terminal_point']='operator_taught_container_entry; placement not yet executed'

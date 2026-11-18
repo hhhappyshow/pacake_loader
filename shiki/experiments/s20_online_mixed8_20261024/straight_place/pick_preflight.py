@@ -28,6 +28,10 @@ def check_pick_transfer(r, qstart, contact, predicted, lift_q, source_index):
             knots.append(q.copy())
         curve=CubicSpline(np.linspace(0,duration,count+1),knots,bc_type=((1,np.zeros(6)),(1,np.zeros(6))))
         grid=curve(np.linspace(0,duration,count+1))
+        from straight_place.joint_quality import retime, check_margin
+        policy=r.planner_options.get('joint_policy')
+        grid=retime(grid,duration,policy)
+        check_margin(grid,r.ik.model,policy)
         for q in grid:
             if not r.validate(q):raise RuntimeError(f'{name}: pickup CAD rejected {r.collision.last_hits}')
         travel+=float(np.linalg.norm(np.diff(grid,axis=0),axis=1).sum());samples+=len(grid)

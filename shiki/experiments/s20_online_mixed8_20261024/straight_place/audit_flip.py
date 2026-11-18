@@ -22,7 +22,7 @@ def audit(folder, box_number=1):
         stages=data['stage'];poses=data['body_q'];labels=list(data['body_labels'])
     tcp_index=labels.index('S20/suction_contact_frame');box_index=labels.index(f'B{box_number}')
     dimensions=np.asarray(report['source_catalog_m'][box_number-1])  # Audit truth only, not planner input.
-    flip=stages==f'B{box_number}_FLIP_90_OUTSIDE';insert=stages==f'B{box_number}_HORIZONTAL_INSERT'
+    flip=np.isin(stages,[f'B{box_number}_FLIP_90_OUTSIDE',f'B{box_number}_FLIP_COUPLED_OUTSIDE']);insert=stages==f'B{box_number}_HORIZONTAL_INSERT'
     release=stages==f'B{box_number}_RELEASE_ACTUAL_FROZEN';grasp=stages=='IDEAL_VACUUM_ON'
     if not all(np.any(mask) for mask in (flip,insert,release,grasp)):
         raise ValueError('Incomplete flip trajectory: required stages absent')
@@ -80,7 +80,7 @@ def audit(folder, box_number=1):
         horizontal.max()<=1 and alignment.max()<=1 and line_error.max()<=.005 and min(outside)>=.01 and
         abs(tilt-90)<=2 and -.001<=result['release_lowest_corner_support_gap_m']<=.02 and
         result['release_rear_face_insertion_depth_m']>0 and result['returned_to_observation'] and frozen_drift<1e-6)
-    if report.get('placement_mode')=='stacked-width':
+    if report.get('placement_mode') in ('stacked-width','stacked14'):
         result['passed']=bool(result['passed'] and result['width_vertical_error_deg']<=2 and
             result['length_horizontal_error_deg']<=2 and result['insert_width_vertical_error_max_deg']<=2 and
             result['insert_length_horizontal_error_max_deg']<=2 and result['insert_min_ceiling_clearance_m']>=.01)
@@ -94,6 +94,17 @@ if __name__=='__main__':
     count=report['requested_cycles']
     rows=[dict(box=f'B{i}',**audit(args.run_folder,i)) for i in range(1,count+1)]
     result=rows[0] if count==1 else dict(passed=all(row['passed'] for row in rows),requested_cycles=count,boxes=rows)
+    if report.get('joint_policy'):
+        from joint_quality import assess
+        with np.load(args.run_folder/'trajectory.npz') as data:
+            qs=data['joint_q'];stages=data['stage']
+        limits=report['joint_limits_rad'];policy=report['joint_policy']
+        result['joint_quality']=assess(qs,limits['lower'],limits['upper'])
+        q=result['joint_quality']
+        result['joint_policy']=policy
+        result['joint_policy_passed']=bool(min(q['min_margin_deg'])>=policy['margin_deg']-1e-4 and max(q['max_speed_deg_s'])<=policy['speed_deg_s']+1e-3 and max(q['max_acceleration_deg_s2'])<=policy['acceleration_deg_s2']+1e-3)
+        result['flip_joint_quality']=[assess(qs[stages==f'B{i}_FLIP_COUPLED_OUTSIDE'],limits['lower'],limits['upper']) for i in range(1,count+1)]
+        result['passed']=bool(result['passed'] and result['joint_policy_passed'])
     (args.run_folder/'flip_acceptance.json').write_text(json.dumps(result,indent=2))
     print(json.dumps(result,indent=2))
     raise SystemExit(0 if result['passed'] else 1)

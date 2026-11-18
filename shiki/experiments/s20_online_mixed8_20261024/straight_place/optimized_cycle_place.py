@@ -68,6 +68,8 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
     flip = options.get('flip_horizontal', False)
     fixture = [Box(v['id'],tuple(v['dims']),tuple(v['pos'])) for v in options.get('static_boxes',[])]
     occupied = list(occupied) + fixture
+    tilted_targets={}
+    active_target_quaternion=None
     width_vertical = options.get('width_vertical',False)
     if flip:
         from straight_place.flip_geometry import horizontal_tool, rotated_extent, sample_metrics, constraint_error
@@ -79,7 +81,9 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
 
     def tool_for_candidate(box, heading):
         if flip:
-            return R.from_rotvec(flip_tool.apply([0,0,1])*heading)*flip_tool
+            tilt=tilted_targets.get(tuple(box.pos))
+            base=R.from_quat(tilt['tool_xyzw']) if tilt else flip_tool
+            return R.from_rotvec(base.apply([0,0,1])*heading)*base
         yaw = -np.pi/2 if tuple(box.dims)==(dimensions[1],dimensions[0],dimensions[2]) else 0.
         return cr*R.from_euler('z',yaw+heading)*estimated_rotation.inv()
 
@@ -154,21 +158,60 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
         distance = float(np.linalg.norm(position-tcp[:3]))
         angle = float((R.from_quat(tcp[3:]).inv()*R.from_quat(quaternion)).magnitude())
         knots = max(1,int(np.ceil(distance/options.get('knot_step_m',.08))),int(np.ceil(angle/.15)))
+        if options.get('joint_policy'):
+            knots=max(knots,int(np.ceil(angle/.035)),int(np.ceil(distance/.02)))
         samples = max(2,int(np.ceil(duration/.02)))
         rot = Slerp([0.,1.],R.from_quat([tcp[3:],quaternion])); q = np.array(qstart).copy(); controls=[q.copy()]
-        for index, alpha in enumerate(np.linspace(0.,1.,knots+1)[1:]):
-            target = tcp[:3]*(1-alpha)+position*alpha
-            tick = time.perf_counter();counters['ik_calls'] += 1
-            ok,q = r.ik._solve_once(target,rot(alpha).as_quat(),q,check_collision=False)
-            counters['ik_s'] += time.perf_counter()-tick
+        if name.endswith('_FLIP_COUPLED_OUTSIDE'):
+            # A synchronised joint-space move avoids the wrist singularity of
+            # Cartesian orientation interpolation. Every emitted state still
+            # has its attached-box sweep and original CAD checked below.
+            counters['ik_calls']+=1
+            ok,q=r.ik._solve_once(position,quaternion,q,check_collision=False)
             if not ok:
-                error = dict(stage=name,reason='native_IK_unsolved',sample=index,
-                    target_world_m=target.tolist(),diagnostics=dict(r.ik.last_diagnostics),q_rad=q.tolist())
+                error=dict(stage=name,reason='coupled_endpoint_IK_unsolved')
                 segment_cache[key]=(None,error)
                 return None,error
-            controls.append(q.copy())
+            lower=r.ik.model.joint_limit_lower.numpy()[:6]
+            upper=r.ik.model.joint_limit_upper.numpy()[:6]
+            for joint in range(6):
+                equivalents=[q[joint]+turn*2*np.pi for turn in (-1,0,1)
+                    if lower[joint]+np.radians(15.)<=q[joint]+turn*2*np.pi<=upper[joint]-np.radians(15.)]
+                if equivalents:q[joint]=min(equivalents,key=lambda v:abs(v-qstart[joint]))
+            if np.max(abs(q-qstart))>np.radians(120.):
+                error=dict(stage=name,reason='coupled_transfer_exceeds_120deg_per_joint')
+                segment_cache[key]=(None,error)
+                return None,error
+            knots=max(knots,int(np.ceil(np.max(abs(q-qstart))/.05)))
+            controls=list(np.linspace(qstart,q,knots+1))
+        else:
+            for index, alpha in enumerate(np.linspace(0.,1.,knots+1)[1:]):
+                target = tcp[:3]*(1-alpha)+position*alpha
+                tick = time.perf_counter();counters['ik_calls'] += 1
+                ok,q = r.ik._solve_once(target,rot(alpha).as_quat(),q,check_collision=False)
+                counters['ik_s'] += time.perf_counter()-tick
+                if not ok:
+                    error = dict(stage=name,reason='native_IK_unsolved',sample=index,
+                        target_world_m=target.tolist(),diagnostics=dict(r.ik.last_diagnostics),q_rad=q.tolist())
+                    segment_cache[key]=(None,error)
+                    return None,error
+                controls.append(q.copy())
+        from straight_place.joint_quality import retime, check_margin
+        try:
+            check_margin(controls,r.ik.model,options.get('joint_policy'))
+            if options.get('joint_policy') and np.max(np.abs(np.diff(controls,axis=0)))>np.radians(25.):
+                raise ValueError('IK branch change exceeds 25 degrees per knot')
+        except ValueError as exc:
+            error=dict(stage=name,reason=str(exc));segment_cache[key]=(None,error)
+            return None,error
         tick = time.perf_counter()
         path = PchipInterpolator(np.linspace(0.,1.,knots+1),np.asarray(controls),axis=0)(np.linspace(0.,1.,samples+1)[1:])
+        if options.get('joint_policy'):
+            path=retime(np.vstack([qstart,path]),duration,options['joint_policy'])[1:]
+            try:check_margin(path,r.ik.model,options['joint_policy'])
+            except ValueError as exc:
+                error=dict(stage=name,reason=str(exc));segment_cache[key]=(None,error)
+                return None,error
         counters['interpolation_s'] += time.perf_counter()-tick
         for index,q in enumerate(path):
             pairs = cad(q)
@@ -181,7 +224,7 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
         if flip:
             for index,q in enumerate(path):
                 tcp_actual=pose_for_q(q)[r.tcp]
-                metrics=sample_metrics(tcp_actual,name,actual_offset,actual_rotation,dimensions,cr,translation,h.door_x,width_vertical=width_vertical)
+                metrics=sample_metrics(tcp_actual,name,actual_offset,actual_rotation,dimensions,cr,translation,h.door_x,width_vertical=width_vertical,expected_tool_quaternion=active_target_quaternion)
                 reason=constraint_error(metrics)
                 if '_HORIZONTAL_' in name:
                     delta=position-tcp[:3]
@@ -258,6 +301,27 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
                     b = Box('current',tuple(flip_dims),(depth,lateral,support_z))
                     if prior.valid(b,occupied) and h.door_fits(lateral,max(support_z+.03,h.door_z0+.03),b.dims[1],b.dims[2]):
                         candidates.append(b)
+            if options.get('fixture14'):
+                from straight_place.tilted_support import solve as solve_tilt
+                right=[];left=[]
+                for depth in (.425,.165):
+                    b=Box('current',tuple(flip_dims),(depth,.24,.99))
+                    if prior.valid(b,occupied) and h.door_fits(b.pos[1],1.02,b.dims[1],b.dims[2]):right.append(b)
+                declared=options['static_boxes']
+                supports=[next(v for v in declared if v['id']==name) for name in ('Base_12','Base_06')]
+                for center_x in (.55,.29):
+                    for center_y in (1.02,.98,1.06):
+                        tilt=solve_tilt(np.asarray(dimensions),flip_tool,estimated_rotation,cr,(center_x,center_y),supports)
+                        if tilt is None:continue
+                        b=Box('current',tuple(tilt['dims']),tuple(tilt['pos']))
+                        # Unequal-height supports require oriented CAD checks;
+                        # their AABBs necessarily overlap the tilted bottom.
+                        previous=[v for v in occupied if v.id not in {f.id for f in fixture}]
+                        if h.fits(b) and not any(p.collides(b,v) for v in previous) and h.door_fits(b.pos[1],1.02,b.dims[1],b.dims[2]):
+                            left.append(b);tilted_targets[tuple(b.pos)]=tilt
+                region=options.get('stack14_region','both')
+                candidates=right if region=='right-middle' else left if region=='left-middle' else (left+right if source_index==0 else right+left)
+                item['stack14_region']=region
             stats = dict(selected=len(candidates),variant='sequential_horizontal_flip',future_arrivals_used=0,
                          candidates=[asdict(b) for b in candidates], layout_search='Fixed supported anchors above declared stack; not general multi-box packing')
         else:
@@ -301,14 +365,16 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
             headings=sorted((0.,np.pi),key=lambda a:(initial_rotation.inv()*tool_for_candidate(b,a)).magnitude())
             for heading in headings:
                 tool_rotation=tool_for_candidate(b,heading)
+                active_target_quaternion=tool_rotation.as_quat() if tuple(b.pos) in tilted_targets else None
                 def target(point):
                     center=translation+cr.apply(np.array(point)+np.array(b.dims)/2+origin)
                     return center-tool_rotation.apply(estimated_offset),tool_rotation.as_quat()
                 if flip:
-                    transit_z=max(b.pos[2]+.03,.40,h.door_z0+.03)
+                    transit_z=max(b.pos[2]+.03,.40,h.door_z0+.03,1.02 if tuple(b.pos) in tilted_targets else 0.)
                     outside_x=-b.dims[0]-.03
                     routes=[[(outside_x,b.pos[1],transit_z),(b.pos[0],b.pos[1],transit_z),tuple(b.pos)]]
-                    if not p.path_clear(b.dims,routes[0],list(occupied),h):
+                    broad_route=routes[0][:2] if tuple(b.pos) in tilted_targets else routes[0]
+                    if not p.path_clear(b.dims,broad_route,list(occupied),h):
                         routes=[]
                 if options.get('insert_then_shift', False) and not flip:
                     entry_center = taught_entry[:3]+tool_rotation.apply(estimated_offset)
@@ -382,6 +448,10 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
                                (label+'_FLIP_90_OUTSIDE',pivot,tool_rotation.as_quat())]
                     else:
                         goals=[(label+'_ALIGN_OUTSIDE',entry_pose[:3],tool_rotation.as_quat())]
+                    if flip and options.get('blended_flip'):
+                        # Distribute translation and orientation over the same
+                        # outside-door motion; no isolated lateral wrist turn.
+                        goals=[(label+'_FLIP_COUPLED_OUTSIDE',pivot,tool_rotation.as_quat())]
                     goals.append((label+'_CLEAR_BASE_AT_ENTRY_HEIGHT',high_door,door_quaternion))
                     for leg,point in enumerate(route):
                         point=np.array(point).copy()
@@ -468,6 +538,9 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
         restore_planning_context()
         if selected is None:
             raise RuntimeError(f'{label}: no complete loaded-place + independent empty-return plan; {len(item["failures"])} retained failures')
+        tilt=tilted_targets.get(tuple(selected['box'].pos))
+        if tilt:
+            item['tilted_support']=dict(tilt,expected_tool_quaternion=tool_for_candidate(selected['box'],selected['heading']).as_quat().tolist())
         item.update(phase='committing',selected_candidate=selected['rank'],nominal=asdict(selected['box']),
             selected_monotonic_s=time.perf_counter(),
             heading_deg=float(np.degrees(selected['heading'])),route=selected['route'],
