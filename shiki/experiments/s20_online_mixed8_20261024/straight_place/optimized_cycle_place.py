@@ -304,8 +304,16 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
             if options.get('fixture14'):
                 from straight_place.tilted_support import solve as solve_tilt
                 right=[];left=[]
+                # Bridge the 20 mm column gap with the centre of mass ON a
+                # supporter. ContactLayoutPrior.supported shrinks every box by
+                # the XY padding before checking (collision margins are not
+                # load-bearing material), so the target must place the
+                # PHYSICAL centre at least 1 cm inside the second column's
+                # shrunk top face for any box width.
+                pad=prior.physical_padding_xy_m
+                lateral_target=max(.24,.51-(flip_dims[1]-2*pad)/2)
                 for depth in (.425,.165):
-                    b=Box('current',tuple(flip_dims),(depth,.24,.99))
+                    b=Box('current',tuple(flip_dims),(depth,lateral_target,.99))
                     if prior.valid(b,occupied) and h.door_fits(b.pos[1],1.02,b.dims[1],b.dims[2]):right.append(b)
                 declared=options['static_boxes']
                 supports=[next(v for v in declared if v['id']==name) for name in ('Base_12','Base_06')]

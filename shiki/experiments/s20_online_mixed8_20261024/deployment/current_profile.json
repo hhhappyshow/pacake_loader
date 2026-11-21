@@ -7,22 +7,224 @@
     "capture_deadline_s": 35.0
   },
   "packing": {
-    "padding_xy_per_side_m": 0.05,
-    "max_box_top_m": 1.0,
+    "padding_xy_per_side_m": 0.02,
+    "max_box_top_m": 1.51,
     "preview_lateral_clearance_m": 0.0,
     "worker_options": {
       "layout_prior": "contact",
       "candidate_order": "greedy",
       "max_candidates": 10,
       "horizontal_row_first": true,
-      "release_vertical_lift_m": 0.05,
       "insert_then_shift": true,
       "neighbor_gap_m": 0.05,
       "attachment_estimate": "observed_top_obb",
       "catalog_source": "committed_prefix_and_current_observation",
       "knot_step_m": 0.08,
       "endpoint_backend": "batch",
-      "record_decisions": true
+      "record_decisions": true,
+      "flip_horizontal": true,
+      "fixture14": true,
+      "stack14_region": "both",
+      "static_boxes": [
+        {
+          "id": "Base_03",
+          "inventory_id": 3,
+          "column": 1,
+          "level": 1,
+          "dims": [
+            0.63,
+            0.4,
+            0.3
+          ],
+          "pos": [
+            0.10499999999999998,
+            0.08,
+            0.0
+          ]
+        },
+        {
+          "id": "Base_08",
+          "inventory_id": 8,
+          "column": 2,
+          "level": 1,
+          "dims": [
+            0.74,
+            0.47,
+            0.29
+          ],
+          "pos": [
+            0.04999999999999999,
+            0.5,
+            0.0
+          ]
+        },
+        {
+          "id": "Base_09",
+          "inventory_id": 9,
+          "column": 3,
+          "level": 1,
+          "dims": [
+            0.71,
+            0.44,
+            0.27
+          ],
+          "pos": [
+            0.065,
+            0.99,
+            0.0
+          ]
+        },
+        {
+          "id": "Base_04",
+          "inventory_id": 4,
+          "column": 1,
+          "level": 2,
+          "dims": [
+            0.63,
+            0.4,
+            0.26
+          ],
+          "pos": [
+            0.10499999999999998,
+            0.08,
+            0.3
+          ]
+        },
+        {
+          "id": "Base_10",
+          "inventory_id": 10,
+          "column": 2,
+          "level": 2,
+          "dims": [
+            0.72,
+            0.47,
+            0.26
+          ],
+          "pos": [
+            0.06,
+            0.5,
+            0.29
+          ]
+        },
+        {
+          "id": "Base_05",
+          "inventory_id": 5,
+          "column": 3,
+          "level": 2,
+          "dims": [
+            0.68,
+            0.42,
+            0.25
+          ],
+          "pos": [
+            0.07999999999999996,
+            1.0,
+            0.27
+          ]
+        },
+        {
+          "id": "Base_01",
+          "inventory_id": 1,
+          "column": 1,
+          "level": 3,
+          "dims": [
+            0.55,
+            0.34,
+            0.22
+          ],
+          "pos": [
+            0.14499999999999996,
+            0.14,
+            0.56
+          ]
+        },
+        {
+          "id": "Base_02",
+          "inventory_id": 2,
+          "column": 2,
+          "level": 3,
+          "dims": [
+            0.58,
+            0.37,
+            0.23
+          ],
+          "pos": [
+            0.13,
+            0.5,
+            0.55
+          ]
+        },
+        {
+          "id": "Base_07",
+          "inventory_id": 7,
+          "column": 3,
+          "level": 3,
+          "dims": [
+            0.63,
+            0.38,
+            0.23
+          ],
+          "pos": [
+            0.10499999999999998,
+            1.02,
+            0.52
+          ]
+        },
+        {
+          "id": "Base_11",
+          "inventory_id": 11,
+          "column": 1,
+          "level": 4,
+          "dims": [
+            0.53,
+            0.33,
+            0.21
+          ],
+          "pos": [
+            0.15499999999999997,
+            0.15000000000000002,
+            0.78
+          ]
+        },
+        {
+          "id": "Base_12",
+          "inventory_id": 12,
+          "column": 2,
+          "level": 4,
+          "dims": [
+            0.53,
+            0.34,
+            0.21
+          ],
+          "pos": [
+            0.15499999999999997,
+            0.5,
+            0.78
+          ]
+        },
+        {
+          "id": "Base_06",
+          "inventory_id": 6,
+          "column": 3,
+          "level": 4,
+          "dims": [
+            0.4,
+            0.38,
+            0.22
+          ],
+          "pos": [
+            0.21999999999999997,
+            1.02,
+            0.75
+          ]
+        }
+      ],
+      "joint_policy": {
+        "margin_deg": 15,
+        "speed_deg_s": 25,
+        "acceleration_deg_s2": 50
+      },
+      "width_vertical": true
     }
   },
   "launch": {
