@@ -176,6 +176,8 @@ def plan_in_worker(request):
         predicted = attachments['predicted_physical_grip']
         if r.planner_options.get('attachment_estimate')=='observed_top_obb':
             predicted=attachments['target_estimated_grip']
+        if request.get('planned_attachment') is not None:
+            predicted=deepcopy(request['planned_attachment'])
         occupancy=[]
         for box in request['occupied']:
             values = box if isinstance(box,dict) else asdict(box)

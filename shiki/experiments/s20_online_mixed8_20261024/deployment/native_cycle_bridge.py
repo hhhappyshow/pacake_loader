@@ -390,11 +390,11 @@ def main():
                 kind=op['type'];record('operation_start',operation=op)
                 if kind=='servoj':
                     ref=json.loads((a.cycle.parent/op['reference']).read_text())
-                    points=ref.get('source_positions_deg',ref['positions_deg'])
+                    points=ref['positions_deg'] if a.backend=='servoj_replay' else ref.get('source_positions_deg',ref['positions_deg'])
                     period_s=float(ref.get('period_s',.02))
                     labels=ref.get('source_stages')
                     start=0
-                    if labels is not None:
+                    if labels is not None and a.backend!='servoj_replay':
                         i=0
                         while i<len(labels):
                             j=i+1

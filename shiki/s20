@@ -17,7 +17,7 @@ def main():
     args = sys.argv[1:]
     if not args or args[0] in ('help', '-h', '--help'):
         print('S20 current entry\n'
-              '  ./s20 run --execute       Run four supervised hardware cycles\n'
+              '  ./s20 run --execute       Run configured supervised hardware cycles\n'
               '  ./s20 plan --observation PATH   Plan from a recorded input; no hardware\n'
               '  ./s20 config              Show current values\n'
               '  ./s20 run --help          Show all session options\n'
@@ -25,6 +25,15 @@ def main():
               'Guide: records/S20/README.md')
         return 0
     action, *extra = args
+    # Resolve task selection before launch defaults and propagate to children.
+    for i, value in enumerate(extra):
+        if value == '--task-mode':
+            if i+1>=len(extra):raise SystemExit('--task-mode needs upright or stacked14')
+            mode=extra[i+1]
+            if mode not in ('upright','stacked14'):raise SystemExit('Unknown task mode: '+mode)
+            os.environ['S20_PROFILE']=str(DEPLOYMENT/('upright_profile.json' if mode=='upright' else 'current_profile.json'))
+            del extra[i:i+2]
+            break
     config = load_profile()
     if action == 'config':
         print(json.dumps(config, indent=2))

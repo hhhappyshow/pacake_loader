@@ -5,6 +5,7 @@ fresh per-arrival observations, overlaps place planning with pick preparation
 and execution, and carries planned-pose occupancy into subsequent rounds.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,7 @@ REL='experiments/s20_online_mixed8_20261024/deployment'
 
 
 def main():
+    global REMOTE
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--rounds',type=int,default=4)
@@ -53,9 +55,22 @@ def main():
     p.add_argument('--preview-rounds',type=int,default=1,
         help='Offline only: repeat the recorded input to exercise accumulated occupancy')
     p.add_argument('--scene-state',type=Path)
+    p.add_argument('--stack14-region',choices=('both','right-middle','left-middle'))
+    p.add_argument('--device-root',default=REMOTE,help='Absolute shiki deployment root on the SDK device')
     p.add_argument('--host',default='hku_reconova@192.168.3.12')
     p.add_argument('--key',type=Path,default=Path.home()/'.ssh/s20_rental_ed25519')
     a=p.parse_args()
+    REMOTE=a.device_root
+    if not REMOTE.startswith('/'):raise ValueError('--device-root must be absolute')
+    if a.stack14_region:os.environ['S20_STACK14_REGION']=a.stack14_region
+    profile=load_profile();stack14=profile['task_mode']=='stacked14'
+    if stack14 and a.execute:
+        if a.execution!='native' or a.native_backend!='servoj_replay':
+            raise ValueError('stacked14 requires --execution native --native-backend servoj_replay')
+        if any(v is not None and not 0<v<=1 for v in (a.native_speed_scale,a.place_speed_scale,a.return_speed_scale)):
+            raise ValueError('stacked14 speed scales must be in (0,1]')
+    print('Planning mode: '+profile['task_mode']+'; handoff: '+profile['handoff_waypoint']+
+          '; region: '+str(profile['packing']['worker_options'].get('stack14_region')),flush=True)
     cycle_command='run-native-cycle' if a.execution=='native' else 'run-cycle'
     if a.vacuum_feedback=='operator' and a.execution!='native':
         raise ValueError('Operator confirmation is implemented only for the native execution option')
@@ -75,7 +90,7 @@ def main():
     env=dict(os.environ)
     env['PYTHONPATH']=os.pathsep.join(map(str,[ROOT/'experiments/s20_newton_update_20261020/runtime13',
         ROOT/'experiments/s20_greedy_async_20261023']))
-    env.update(OMP_NUM_THREADS='2',OPENBLAS_NUM_THREADS='1',WARP_CACHE_PATH=str(Path.home()/'.cache/warp'))
+    env.update(OMP_NUM_THREADS='2',OPENBLAS_NUM_THREADS='1',WARP_CACHE_PATH=os.environ.get('WARP_CACHE_PATH',str(a.output/'warp_cache')))
     ssh=['ssh','-i',str(a.key),'-o','BatchMode=yes','-o','ConnectTimeout=5',
         '-o','StrictHostKeyChecking=yes',a.host]
     scp=['scp','-q','-i',str(a.key),'-o','BatchMode=yes','-o','ConnectTimeout=5',
@@ -110,6 +125,14 @@ def main():
     camera_started=False
     session_began=time.monotonic()
     try:
+        if stack14 and a.execute:
+            # A local git pull does not update the separately installed SDK tree.
+            target=f'{REMOTE}/{REL}/native_cycle_bridge.py'
+            check=run(ssh+[shlex.join(['sha256sum',target])],stdout=subprocess.PIPE,check=True,text=True)
+            expected=hashlib.sha256((HERE/'native_cycle_bridge.py').read_bytes()).hexdigest()
+            if check.stdout.split()[0]!=expected:
+                raise RuntimeError('SDK bridge differs from local code at '+target+
+                    '; sync deployment code or select --device-root before executing')
         if not a.observation:
             remote(f'{REMOTE}/{REL}/s20-device','camera-session','start','--folder',camera_session)
             camera_started=True
@@ -206,16 +229,25 @@ def main():
             common=['--observation',str(observation/'observation/observation.json'),
                 '--grasp',str(observation/'grasp.json'),'--site-urdf',str(HERE/'site_robot.urdf')]
             place=out/'place';pick=out/'pick';plan_began=time.monotonic()
-            say(f'[{index+1}/{a.rounds}] Preparing pick and asynchronous place paths')
-            with (out/'place.log').open('x') as log:
-                command=[sys.executable,str(HERE/'prepare_observed_place.py'),*common,'--output',str(place)]
+            say(f'[{index+1}/{a.rounds}] '+('Preflighting complete stacked14 pick/flip/place/return' if stack14 else 'Preparing pick and asynchronous place paths'))
+            if stack14:
+                command=[sys.executable,str(HERE/'prepare_stack14_cycle.py'),*common,
+                    '--snapshot',str(observation/'controller_snapshot.json'),'--output',str(out)]
                 if scene:command+=['--scene-state',str(scene)]
-                planner=subprocess.Popen(command,env=env,stdout=log,stderr=subprocess.STDOUT,cwd=ROOT)
-            workers.append(planner)
-            with (out/'pick.log').open('x') as log:
-                run([sys.executable,str(HERE/'prepare_observed_pick.py'),*common,
-                    '--snapshot',str(observation/'controller_snapshot.json'),'--output',str(pick)],
-                    env=env,stdout=log,stderr=subprocess.STDOUT,check=True,cwd=ROOT)
+                with (out/'preflight.log').open('x') as log:
+                    planner=subprocess.Popen(command,env=env,stdout=log,stderr=subprocess.STDOUT,cwd=ROOT)
+                    workers.append(planner)
+                    if planner.wait():raise RuntimeError('Stack14 full-cycle preflight failed; see preflight.json/preflight.log')
+            else:
+                with (out/'place.log').open('x') as log:
+                    command=[sys.executable,str(HERE/'prepare_observed_place.py'),*common,'--output',str(place)]
+                    if scene:command+=['--scene-state',str(scene)]
+                    planner=subprocess.Popen(command,env=env,stdout=log,stderr=subprocess.STDOUT,cwd=ROOT)
+                workers.append(planner)
+                with (out/'pick.log').open('x') as log:
+                    run([sys.executable,str(HERE/'prepare_observed_pick.py'),*common,
+                        '--snapshot',str(observation/'controller_snapshot.json'),'--output',str(pick)],
+                        env=env,stdout=log,stderr=subprocess.STDOUT,check=True,cwd=ROOT)
             pick_result=json.loads((pick/'result.json').read_text())
             if not pick_result['success']:
                 raise RuntimeError('Pick planning: '+pick_result.get('error','unknown failure'))
@@ -250,17 +282,20 @@ def main():
                     raise RuntimeError(f'{name}: remote execution failed; see session.log') from remote_error
                 result=json.loads((out/name/'result.json').read_text())
                 if not result['completed']:raise RuntimeError(result.get('error','Hardware sequence did not finish'))
+            recipe=out/'cycle_recipe'
+            if stack14:
+                local('compose_cycle.py','--pick',pick,'--place',place,'--output',recipe)
             if a.execute:
-                say(f'[{index+1}/{a.rounds}] Executing contact, vacuum, lift and entry')
+                say(f'[{index+1}/{a.rounds}] Executing contact, vacuum and '+profile['handoff_waypoint'])
                 dispatch(pick_recipe,'pick_execution')
             arrived=time.monotonic();code=planner.wait()
             row['entry_wait_s']=time.monotonic()-arrived if a.execute else None
             if code:raise RuntimeError('Place subprocess failed; see place.log')
             result=json.loads((place/'result.json').read_text())
             row.update(place_compute_s=result['compute_s'],place_initialization_s=result['initialization_s'],
-                planning_started_before_pick=True,actual_async_overlap_measured=a.execute)
+                planning_started_before_pick=True,actual_async_overlap_measured=a.execute and not stack14)
             if not result['success']:raise RuntimeError('Place planning: '+str(result.get('error','see place/result.json')))
-            recipe=out/'cycle_recipe';local('compose_cycle.py','--pick',pick,'--place',place,'--output',recipe)
+            if not stack14:local('compose_cycle.py','--pick',pick,'--place',place,'--output',recipe)
             if a.execute:
                 say(f'[{index+1}/{a.rounds}] Executing place, release and empty return')
                 dispatch(recipe,'place_execution',place_only=True)

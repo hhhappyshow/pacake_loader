@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import sys
 import time
+from current_profile import load_profile
 
 HERE=Path(__file__).resolve().parent
 EXPERIMENT=HERE.parent
@@ -23,6 +24,7 @@ def main():
     p.add_argument('--snapshot',type=Path,required=True)
     p.add_argument('--site-urdf',type=Path,required=True)
     p.add_argument('--waypoints',type=Path,default=HERE/'pick_waypoints.json')
+    p.add_argument('--scene-state',type=Path)
     p.add_argument('--output',type=Path,required=True)
     a=p.parse_args();a.output.mkdir(parents=True,exist_ok=False)
     import numpy as np
@@ -37,25 +39,40 @@ def main():
     observation=json.loads(a.observation.read_text());fitted=observation['fitted']
     grasp=json.loads(a.grasp.read_text())['selected'];snapshot=json.loads(a.snapshot.read_text())
     waypoints=json.loads(a.waypoints.read_text())
-    r=make_runtime(a.output/'runtime',[fitted['dimensions_m']],site_urdf=a.site_urdf)
+    profile=load_profile();options=profile['packing']['worker_options']
+    policy=options.get('joint_policy')
+    scene=json.loads(a.scene_state.read_text()) if a.scene_state else {}
+    prefix=scene.get('catalog',[])
+    r=make_runtime(a.output/'runtime',prefix+[fitted['dimensions_m']],site_urdf=a.site_urdf,
+                   static_boxes=options.get('static_boxes',[]))
     r.collision=Collision(r.w)
     initialization_s=time.monotonic()-began
-    box=np.array(fitted['T_world_box']);body=r.boxes[0]
+    box=np.array(fitted['T_world_box']);body=r.boxes[len(prefix)]
     r.fixed={body:np.r_[box[:3,3],Rotation.from_matrix(box[:3,:3]).as_quat()]}
-    r.collision.arrived={0};r.collision.current_source=0
+    r.fixed.update({r.boxes[i]:np.array(scene['placed_world_poses'][f'B{i+1}']) for i in range(len(prefix))})
+    r.collision.arrived=set(range(len(prefix)+1));r.collision.current_source=len(prefix)
     r.history.clear();r.qs.clear();r.stages.clear();r.simtime.clear();r.t=0.
     r.frame(np.array(snapshot['q_rad']),'MEASURED_START')
     recorder=PickReferenceRecorder(r,a.site_urdf)
     r.execute=recorder.execute
     r.frame=recorder.frame
     velocity_rows={}
+    def constrain(reference):
+        if policy:
+            from straight_place.joint_quality import retime as bound, check_margin
+            q=bound(np.radians(reference['positions_deg']),reference['duration_s'],policy)
+            check_margin(q,r.ik.model,policy)
+            reference.update(positions_deg=np.degrees(q).tolist(),
+                velocities_deg_s=np.degrees(np.vstack([np.zeros((1,6)),np.diff(q,axis=0)/.02])).tolist(),
+                duration_s=(len(q)-1)*.02)
+        return reference
     def retain_velocity(reference):
         start=len(r.qs)
         velocity_rows.update({start+i:np.radians(v) for i,v in
             enumerate(reference['velocities_deg_s'])})
     report=dict(scope=__doc__,success=False,motion_sent=False,io_written=False,
         snapshot=str(a.snapshot),observation=str(a.observation),site_urdf=str(a.site_urdf),
-        stages=[],attachment_confirmed=False,observed_ground_used=True,
+        task_mode=profile['task_mode'],handoff_waypoint=profile['handoff_waypoint'],stages=[],attachment_confirmed=False,observed_ground_used=True,
         ground_plane=fitted['ground_plane'],joint_limits_source='Existing selected live controller limits, unchanged')
     # Replace only the generic pickup ground with the actual observed plane.
     ground=np.array(fitted['ground_plane'],float);ground/=np.linalg.norm(ground[:3])
@@ -78,7 +95,7 @@ def main():
         times=curve.x
         reference=prepare_reference(times,curve(times),velocities_rad_s=curve.derivative(1)(times),
             accelerations_rad_s2=curve.derivative(2)(times),phase=phase)
-        retain_velocity(reference)
+        retain_velocity(constrain(reference))
         report['stages'].append(dict(stage=stage,reference_duration_s=reference['duration_s'],
             source_duration_s=reference['source_duration_s'],phase=phase))
         return np.radians(reference['positions_deg']),reference['duration_s']
@@ -86,7 +103,7 @@ def main():
         q0=r.q.copy();q1=np.array(waypoints[name]['q_rad']);zero=np.zeros((2,6))
         reference=prepare_reference([0,1],np.array([q0,q1]),velocities_rad_s=zero,
             accelerations_rad_s2=zero,phase='normal')
-        retain_velocity(reference)
+        retain_velocity(constrain(reference))
         grid=np.radians(reference['positions_deg'])
         recorder.anchor_knots=np.array([q0,q1])
         # Geometric validation is independent of the unchanged execution clock.
@@ -108,8 +125,10 @@ def main():
         r.frame(r.q,'ESTIMATED_ATTACHMENT_FOR_PLANNING_ONLY')
         r.move([(top+[0,0,.20],quat)],'VERTICAL_CLEARANCE',2.,reference_transform=retime)
         joint_target('post_pick_lift','TAUGHT_LIFT')
-        joint_target('container_entry','TAUGHT_ENTRY')
+        if profile['handoff_waypoint']=='container_entry':
+            joint_target('container_entry','TAUGHT_ENTRY')
         report.update(success=True,end_q_rad=r.q.tolist(),
+            planned_attachment=dict(offset_m=r.w.grip_offset.tolist(),rotation_xyzw=r.w.grip_rot.as_quat().tolist(),source='Deploy pick observed OBB attachment hypothesis; not measured seal'),
             T_tcp_box_estimate=grasp['T_tcp_box_estimated'],
             reference_duration_s=r.simtime[-1],actual_events_not_performed=['contact','vacuum_on','seal','lift','entry'])
     except Exception as exc:

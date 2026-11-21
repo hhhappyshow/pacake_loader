@@ -30,6 +30,7 @@ def main():
     p.add_argument('--grasp',type=Path,required=True)
     p.add_argument('--site-urdf',type=Path,required=True)
     p.add_argument('--waypoints',type=Path,default=HERE/'pick_waypoints.json')
+    p.add_argument('--pick-result',type=Path)
     p.add_argument('--scene-state',type=Path,
         help='Measured committed prefix: catalog, occupied, placed_world_poses, scene_version')
     p.add_argument('--output',type=Path,required=True)
@@ -39,11 +40,12 @@ def main():
     from straight_place.async_sparse_place import initialize_worker,plan_in_worker
     began=time.monotonic()
     observation=json.loads(a.observation.read_text());fitted=dict(observation['fitted'])
-    packing = load_profile()['packing']
+    profile = load_profile()
+    packing = profile['packing']
     padding_xy_m = packing['padding_xy_per_side_m']
     dimensions = np.asarray(fitted['dimensions_m'])+np.array([2*padding_xy_m, 2*padding_xy_m, 0.])
     fitted.update(planning_dimensions_m=dimensions.tolist(), padding_xy_per_side_m=padding_xy_m,
-        planning_size_source='Measured box plus 5cm on each XY side; measured height and grasp unchanged')
+        planning_size_source=f'Measured box plus {padding_xy_m:g}m on each XY side')
     grasp=json.loads(a.grasp.read_text())['selected']
     t=np.array(grasp['T_world_tcp']);contact=np.r_[t[:3,3],Rotation.from_matrix(t[:3,:3]).as_quat()]
     waypoints=json.loads(a.waypoints.read_text())
@@ -59,10 +61,14 @@ def main():
     initialized=time.monotonic()
     request=dict(request_id=a.output.name,scene_version=scene['scene_version'],
         source_index=source_index,fitted=fitted,planned_contact_tcp=contact.tolist(),
-        entry_q=waypoints['container_entry']['q_rad'],occupied=scene['occupied'],
+        entry_q=waypoints[profile['handoff_waypoint']]['q_rad'],occupied=scene['occupied'],
         placed_world_poses=scene['placed_world_poses'])
+    if a.pick_result:
+        pick=json.loads(a.pick_result.read_text())
+        if not pick['success']:raise ValueError('Pick preflight failed')
+        request.update(entry_q=pick['end_q_rad'],planned_attachment=pick['planned_attachment'])
     result=plan_in_worker(request)
-    result.update(scope=__doc__,observation_source=str(a.observation),site_urdf=str(a.site_urdf),
+    result.update(task_mode=profile['task_mode'],handoff_waypoint=profile['handoff_waypoint'],effective_options=options,scope=__doc__,observation_source=str(a.observation),site_urdf=str(a.site_urdf),
         committed_catalog=scene['catalog'],
         initialization_s=initialized-began,total_wall_s=time.monotonic()-began,
         motion_sent=False,io_written=False,actual_attachment_confirmed=False,

@@ -31,7 +31,7 @@ def main():
     q=pick['joint_q'];t=pick['times_s'];stages=pick['stage']
     qd=pick['joint_qd'] if 'joint_qd' in pick else None
     if place is not None and not np.allclose(q[-1],place['joint_q'][0],rtol=0,atol=1e-10):
-        raise ValueError('Taught entry references do not join')
+        raise ValueError('Pick/place handoff references do not join')
     root=Path(__file__).resolve().parents[3]
     sys.path.insert(0,str(root/'reproductions/ludan_greedy_20261023/deployment_ws/src/elfin_trajectory_executor'))
     from elfin_trajectory_executor.servo_j import fjt_to_servo_j_deg
@@ -75,10 +75,10 @@ def main():
     pt=(pt-pt[0])*profile.get('place_reference_time_scale',1.0)
     operations.append(dict(type='bind_async_result',scene_version=place['scene_version'],
         completed=False,note='Bind current measured entry, attachment and committed scene'))
-    motion('place',pq[:release+1],pt[:release+1])
+    motion('place',pq[:release+1],pt[:release+1],labels=place['stages'][:release+1])
     operations.append(dict(type='release_and_confirm_vacuum_off',completed=False,
         note='Actual release IO; released pose follows the planned-pose assumption'))
-    motion('empty_return',pq[release:],pt[release:])
+    motion('empty_return',pq[release:],pt[release:],labels=place['stages'][release:])
     operations.append(dict(type='commit_planned_occupancy',completed=False,
         predicted_occupied=place['predicted_occupied'],
         predicted_release_world_pose=place['predicted_release_world_pose'],
@@ -97,7 +97,7 @@ def main():
         next_scene['placed_world_poses']={f'B{int(k)+1}':v
             for k,v in next_scene['placed_world_poses'].items()}
     next_scene['placed_world_poses'][place['predicted_occupied']['id']]=place['predicted_release_world_pose']
-    result=dict(scope=__doc__,operations=operations,source_pick=str(a.pick),source_place=str(a.place),
+    result=dict(scope=__doc__,task_mode=pick_report.get('task_mode','upright'),handoff_waypoint=pick_report.get('handoff_waypoint','container_entry'),operations=operations,source_pick=str(a.pick),source_place=str(a.place),
         motion_sent=False,io_written=False,hardware_cycle_completed=False,
         backend='Existing classmate ServoJ resampler; official SDK execution not started',
         source_place_compute_s=place['compute_s'],

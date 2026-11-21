@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+from current_profile import load_profile
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -39,7 +40,8 @@ def main():
     from observed_collision import Collision
     from servoj_reference import prepare_reference
     r = make_runtime(a.output/'runtime', scene.get('catalog') or [[.55,.40,.25]],
-                     site_urdf=HERE/'site_robot.urdf')
+                     site_urdf=HERE/'site_robot.urdf',
+                     static_boxes=load_profile()['packing']['worker_options'].get('static_boxes',[]))
     r.collision = Collision(r.w)
     r.fixed = {r.boxes[i]: np.array(scene['placed_world_poses'][f'B{i+1}'])
                for i in range(len(scene.get('catalog', [])))}
@@ -48,6 +50,14 @@ def main():
     zeros = np.zeros((2,6))
     reference = prepare_reference([0,1], np.array([q0,q1]),
         velocities_rad_s=zeros, accelerations_rad_s2=zeros, phase='normal')
+    policy=load_profile()['packing']['worker_options'].get('joint_policy')
+    if policy:
+        from straight_place.joint_quality import retime, check_margin
+        grid=retime(np.radians(reference['positions_deg']),reference['duration_s'],policy)
+        check_margin(grid,r.ik.model,policy)
+        reference.update(positions_deg=np.degrees(grid).tolist(),
+            velocities_deg_s=np.degrees(np.vstack([np.zeros((1,6)),np.diff(grid,axis=0)/.02])).tolist(),
+            duration_s=(len(grid)-1)*.02)
     for q in np.radians(reference['positions_deg']):
         if not r.validate(q):
             raise RuntimeError(f'Observation return intersects modeled CAD: {r.collision.last_hits}')

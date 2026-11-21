@@ -3,8 +3,6 @@
 Positions are lower corners relative to (door_x, inner_y0, floor_z).
 This is a configurable task prior, not a reconstruction of the user's cargo.
 """
-import numpy as np
-from scipy.spatial.transform import Rotation as R
 
 
 # User inventory in centimetres, in the supplied order. IDs remain stable when
@@ -31,7 +29,7 @@ def twelve_box_fixture():
     for column,(ids,y,width,alignment) in enumerate(columns,1):
         z=0.
         for level,number in enumerate(ids,1):
-            lateral,height,depth=np.asarray(BASE14_CM[number-1],float)/100
+            lateral,height,depth=(v/100 for v in BASE14_CM[number-1])
             yy=y+(width-lateral)*(1. if alignment=='right' else .5 if alignment=='center' else 0.)
             boxes.append(dict(id=f'Base_{number:02d}',inventory_id=number,
                 column=column,level=level,dims=[float(depth),float(lateral),float(height)],
@@ -51,6 +49,8 @@ def three_layer_boxes():
 
 def add_static_boxes(builder, config, boxes):
     """Add visible, collidable static shapes before Newton model finalization."""
+    import numpy as np
+    from scipy.spatial.transform import Rotation as R
     import warp as wp
     tf=next(t for t in config['static_transforms'] if t['child']=='container_link')
     rotation=R.from_euler('xyz',tf['rotation_rpy'])
