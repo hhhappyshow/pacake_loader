@@ -126,7 +126,7 @@
       ],
       "pos": [
         0.13,
-        0.5,
+        0.55,
         0.55
       ]
     },
@@ -174,7 +174,7 @@
       ],
       "pos": [
         0.15499999999999997,
-        0.5,
+        0.565,
         0.78
       ]
     },
@@ -207,16 +207,14 @@
       0.23
     ]
   ],
-  "target_corners_m": [
-    [
-      0.425,
-      0.24,
-      0.99
-    ],
-    [
-      0.165,
-      0.24,
-      0.99
-    ]
-  ]
+  "placement_regions": [
+    "right-middle",
+    "left-middle"
+  ],
+  "default_order": [
+    "left-middle",
+    "right-middle"
+  ],
+  "center_column_alignment": "centered on base",
+  "left_middle_support": "tilted bottom face; unequal top planes 0.99/0.97m; no added shim; physical stability unverified"
 }

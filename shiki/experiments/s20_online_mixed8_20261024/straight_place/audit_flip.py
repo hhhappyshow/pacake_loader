@@ -16,6 +16,8 @@ def audit(folder, box_number=1):
     door_x=cfg['container']['opening']['aperture']['corners'][0][0]
     floor=cfg['container']['inner']['floor_z']
     stack=report.get('preloaded_boxes',[])
+    placement=report['placements'][box_number-1]
+    tilt=placement.get('tilted_support')
     support_height=max((b['pos'][2]+b['dims'][2] for b in stack),default=0.)
     support_plane=floor+support_height
     with np.load(folder/'trajectory.npz') as data:
@@ -71,6 +73,15 @@ def audit(folder, box_number=1):
             local=cr.inv().apply(pose[:3]-translation)
             clearances.append(cfg['container']['inner']['ceiling_z']-local[2]-span[2]/2)
         result['insert_min_ceiling_clearance_m']=float(min(clearances))
+        transit=np.isin(stages,[f'B{box_number}_HORIZONTAL_INSERT',f'B{box_number}_HORIZONTAL_SHIFT'])
+        lower=stages==f'B{box_number}_HORIZONTAL_LOWER'
+        bottom=[]
+        for pose in poses[transit,box_index]:
+            span=np.abs((cr.inv()*R.from_quat(pose[3:])).as_matrix())@dimensions
+            local=cr.inv().apply(pose[:3]-translation)
+            bottom.append(local[2]-span[2]/2-support_plane)
+        result['horizontal_transit_min_clearance_above_highest_fixture_m']=float(min(bottom))
+        result['final_lowering_distance_m']=float(np.linalg.norm(poses[lower,box_index][0,:3]-poses[lower,box_index][-1,:3]))
         insert_rot=R.from_quat(poses[insert,box_index,3:])
         widths=insert_rot.apply(np.tile([0,1,0],(len(tcp),1)))
         lengths=insert_rot.apply(np.tile([1,0,0],(len(tcp),1)))
@@ -78,12 +89,28 @@ def audit(folder, box_number=1):
         result['insert_length_horizontal_error_max_deg']=float(np.degrees(np.arcsin(np.clip(abs(lengths[:,2]),0,1))).max())
     result['passed']=bool(result['completed'] and result['completed_cycles']==report['requested_cycles'] and
         horizontal.max()<=1 and alignment.max()<=1 and line_error.max()<=.005 and min(outside)>=.01 and
-        abs(tilt-90)<=2 and -.001<=result['release_lowest_corner_support_gap_m']<=.02 and
+        abs(tilt-90)<=2 and (bool(placement.get('tilted_support')) or -.001<=result['release_lowest_corner_support_gap_m']<=.02) and
         result['release_rear_face_insertion_depth_m']>0 and result['returned_to_observation'] and frozen_drift<1e-6)
-    if report.get('placement_mode') in ('stacked-width','stacked14'):
+    if placement.get('tilted_support'):
+        from tilted_support import bottom_face, support_height as required_center_height
+        metadata=placement['tilted_support']
+        origin=np.array([door_x,-cfg['container']['inner']['width']/2,floor])
+        relative_center=center-origin
+        poly=bottom_face(dimensions,cr.inv()*release_rot,relative_center[:2])
+        supports=[b for b in stack if b['id'] in metadata['support_ids']]
+        gaps=[float(relative_center[2]-required_center_height(poly,b)) for b in supports]
+        expected=R.from_quat(metadata['expected_tool_quaternion'])
+        orientation_errors=np.degrees((expected.inv()*R.from_quat(tcp[:,3:])).magnitude())
+        result['tilted_support']=dict(metadata,actual_bottom_face_gap_above_each_support_m=gaps,
+            insert_target_orientation_error_max_deg=float(orientation_errors.max()),
+            physical_stability_validated=False)
+        result['passed']=bool(result['passed'] and len(gaps)==2 and min(gaps)>=-.001 and max(gaps)<=.03 and abs(gaps[0]-gaps[1])<=.01 and orientation_errors.max()<=2 and result['insert_min_ceiling_clearance_m']>=.01)
+    elif report.get('placement_mode') in ('stacked-width','stacked14'):
         result['passed']=bool(result['passed'] and result['width_vertical_error_deg']<=2 and
             result['length_horizontal_error_deg']<=2 and result['insert_width_vertical_error_max_deg']<=2 and
             result['insert_length_horizontal_error_max_deg']<=2 and result['insert_min_ceiling_clearance_m']>=.01)
+    if placement.get('stack14_region'):
+        result['passed']=bool(result['passed'] and result['horizontal_transit_min_clearance_above_highest_fixture_m']>=.05 and result['final_lowering_distance_m']>=.03)
     return result
 
 if __name__=='__main__':

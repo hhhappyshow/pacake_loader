@@ -305,7 +305,7 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
                 from straight_place.tilted_support import solve as solve_tilt
                 right=[];left=[]
                 for depth in (.425,.165):
-                    b=Box('current',tuple(flip_dims),(depth,.24,.99))
+                    b=Box('current',tuple(flip_dims),(depth,.30,.99))
                     if prior.valid(b,occupied) and h.door_fits(b.pos[1],1.02,b.dims[1],b.dims[2]):right.append(b)
                 declared=options['static_boxes']
                 supports=[next(v for v in declared if v['id']==name) for name in ('Base_12','Base_06')]
@@ -371,9 +371,16 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
                     return center-tool_rotation.apply(estimated_offset),tool_rotation.as_quat()
                 if flip:
                     transit_z=max(b.pos[2]+.03,.40,h.door_z0+.03,1.02 if tuple(b.pos) in tilted_targets else 0.)
+                    if options.get('fixture14'):
+                        roof_limit=min(h.height,h.door_z1)-b.dims[2]-.04
+                        transit_z=min(1.07,roof_limit)
+                        if transit_z<1.04:
+                            continue  # Less than 5 cm above the tallest fixture.
                     outside_x=-b.dims[0]-.03
                     routes=[[(outside_x,b.pos[1],transit_z),(b.pos[0],b.pos[1],transit_z),tuple(b.pos)]]
-                    broad_route=routes[0][:2] if tuple(b.pos) in tilted_targets else routes[0]
+                    if tuple(b.pos) in tilted_targets:
+                        routes=[[(outside_x,.30,transit_z),(b.pos[0],.30,transit_z),(b.pos[0],b.pos[1],transit_z),tuple(b.pos)]]
+                    broad_route=routes[0][:-1] if tuple(b.pos) in tilted_targets else routes[0]
                     if not p.path_clear(b.dims,broad_route,list(occupied),h):
                         routes=[]
                 if options.get('insert_then_shift', False) and not flip:
@@ -457,7 +464,8 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
                         point=np.array(point).copy()
                         if leg==len(route)-1:point[2]+=.005
                         position,quaternion=target(point)
-                        name = (label+('_HORIZONTAL_PREINSERT','_HORIZONTAL_INSERT','_HORIZONTAL_LOWER')[leg]) if flip else f'{label}_PLACE_LEG{leg}'
+                        flip_stages=('_HORIZONTAL_PREINSERT','_HORIZONTAL_INSERT','_HORIZONTAL_SHIFT','_HORIZONTAL_LOWER') if len(route)==4 else ('_HORIZONTAL_PREINSERT','_HORIZONTAL_INSERT','_HORIZONTAL_LOWER')
+                        name = (label+flip_stages[leg]) if flip else f'{label}_PLACE_LEG{leg}'
                         if options.get('insert_then_shift', False) and leg and not flip:
                             name = label+('_INSERT_DEPTH', '_SHIFT_LATERAL', '_LOWER_FINAL')[leg-1]
                         goals.append((name,position,quaternion))
@@ -514,6 +522,9 @@ def place_and_return(r, fitted, contact_tcp, occupied, move, taught_pose,
                         if fixture:
                             # Retract horizontally through the same free lane before
                             # changing heading or crossing the occupied stack.
+                            if len(route)==4:
+                                shift_exit,_=target(route[1])
+                                empty_goals.append((label+'_HORIZONTAL_EMPTY_SHIFT',shift_exit,release_tcp[3:]))
                             exit_position,_=target(route[0])
                             empty_goals.append((label+'_HORIZONTAL_EMPTY_EXIT',exit_position,release_tcp[3:]))
                             return_entry = taught_entry.copy()
