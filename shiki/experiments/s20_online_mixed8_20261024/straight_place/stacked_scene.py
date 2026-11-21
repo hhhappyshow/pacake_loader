@@ -19,13 +19,13 @@ def twelve_box_fixture():
     """Three columns, four levels; longest edge points into the container.
 
     First two columns finish at 0.99 m, the third at 0.97 m. Their upper
-    footprints are aligned towards their common 20 mm gap, allowing a box
-    to bridge them without an unsupported centre of mass. Geometric design
+    footprints retain full support on each column. The middle column is
+    centred on its base; top lateral gaps are 85 mm and 115 mm. Geometric design
     only: cardboard stiffness, loads and suction capacity are not modelled.
     All coordinates are lower corners relative to door / inner-y0 / floor.
     """
     columns = [([3,4,1,11], .08, .40, 'right'),
-               ([8,10,2,12], .50, .47, 'left'),
+               ([8,10,2,12], .50, .47, 'center'),
                ([9,5,7,6], .99, .44, 'center')]
     boxes=[]
     for column,(ids,y,width,alignment) in enumerate(columns,1):
